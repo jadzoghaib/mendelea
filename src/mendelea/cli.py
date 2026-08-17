@@ -404,6 +404,65 @@ def cmd_case_report(args) -> int:
     return 0
 
 
+def cmd_case_review(args) -> int:
+    """Record a curator's decision about one moved variant.
+
+    Stamped with the evidence snapshot in view at the time, so the ledger says
+    not just what was decided but what it was decided against.
+    """
+    cfg = config_module.load()
+    with connect(cfg.warehouse) as connection:
+        panel = spans.loaded_panel(connection)
+        snapshot_id = connection.execute(
+            "SELECT snapshot_id FROM snapshot_manifest WHERE panel = ? "
+            "ORDER BY release_date DESC LIMIT 1",
+            [panel],
+        ).fetchone()
+        if not snapshot_id:
+            print("no evidence snapshot to anchor the decision to", file=sys.stderr)
+            return 1
+
+        entry = ledger.append(
+            connection,
+            tenant_id=args.tenant,
+            allele_id=args.allele_id,
+            case_ref=args.case_ref,
+            verdict=args.verdict,
+            rationale=args.rationale,
+            reviewer=args.reviewer,
+            evidence_snapshot_id=snapshot_id[0],
+        )
+
+    print(f"recorded #{entry.seq} {entry.verdict} for {entry.case_ref} "
+          f"({entry.allele_id[:24]}…)")
+    print(f"  against {entry.evidence_snapshot_id}")
+    print(f"  hash {entry.entry_hash[:16]}… chained to {entry.prev_hash[:16]}…")
+    return 0
+
+
+def cmd_case_log(args) -> int:
+    """Show a tenant's decision ledger, newest last, with its integrity state."""
+    cfg = config_module.load()
+    with connect(cfg.warehouse) as connection:
+        ledger.init(connection)
+        rows = connection.execute(
+            "SELECT seq, created_at, case_ref, verdict, reviewer, rationale "
+            "FROM decision_ledger WHERE tenant_id = ? ORDER BY seq",
+            [args.tenant],
+        ).fetchall()
+        intact, bad = ledger.verify(connection, args.tenant)
+
+    if not rows:
+        print(f"no decisions recorded for {args.tenant!r}")
+        return 0
+
+    for seq, created_at, case_ref, verdict, reviewer, rationale in rows:
+        print(f"  #{seq:<4} {created_at}  {case_ref:<12} {verdict:<10} "
+              f"{reviewer:<20} {rationale}")
+    print("\n  chain " + ("intact" if intact else f"BROKEN at entry {bad}"))
+    return 0 if intact else 1
+
+
 def cmd_case_verify(args) -> int:
     cfg = config_module.load()
     with connect(cfg.warehouse) as connection:
@@ -526,6 +585,19 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--limit", type=int, default=15)
     p.add_argument("--out", default=None, help="also write findings as JSON")
     p.set_defaults(func=cmd_case_report)
+
+    p = sub.add_parser("case-review", help="record a decision about a moved variant")
+    p.add_argument("--tenant", required=True)
+    p.add_argument("--case-ref", required=True)
+    p.add_argument("--allele-id", required=True)
+    p.add_argument("--verdict", required=True, choices=sorted(ledger.VERDICTS))
+    p.add_argument("--rationale", default="")
+    p.add_argument("--reviewer", required=True)
+    p.set_defaults(func=cmd_case_review)
+
+    p = sub.add_parser("case-log", help="show a tenant's decision ledger")
+    p.add_argument("--tenant", required=True)
+    p.set_defaults(func=cmd_case_log)
 
     p = sub.add_parser("case-verify", help="check a tenant's decision ledger")
     p.add_argument("--tenant", required=True)

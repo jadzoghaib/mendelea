@@ -1,0 +1,14 @@
+# Normalise line endings in the repo, check out native. Without this, git
+# warns on every single file at every `git add` on Windows.
+* text=auto
+
+*.py    text diff=python
+*.md    text
+*.json  text
+*.toml  text
+*.html  text
+
+# Never touch binary payloads.
+*.parquet binary
+*.gz      binary
+*.tbi     binary

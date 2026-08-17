@@ -12,35 +12,25 @@ evidence say on date D" is a range predicate, not a reconstruction.
 
 from __future__ import annotations
 
+from ..evidence import spans
+
 
 def loaded_panel(connection) -> dict:
     """Which panel the warehouse currently holds, and its extent."""
     row = connection.execute(
-        """
-        SELECT any_value(panel), COUNT(DISTINCT allele_id), COUNT(DISTINCT gene)
-        FROM assertion_span
-        """
+        "SELECT COUNT(DISTINCT allele_id), COUNT(DISTINCT gene) FROM assertion_span"
     ).fetchone()
-    return {"panel": row[0], "alleles": row[1], "genes": row[2]}
+    return {"panel": spans.loaded_panel(connection), "alleles": row[0], "genes": row[1]}
 
 
 def release_dates(connection, panel: str) -> list[str]:
-    """Release dates ingested *for this panel*, oldest first. The slider stops.
+    """Release dates ingested for this panel, oldest first. The slider stops.
 
-    Filtered by panel deliberately. The manifest table accumulates every panel
-    ever ingested, and offering a date this panel was never observed on would
-    silently show carried-forward state as though it had been measured. The
-    slider must only stop where we actually looked.
-
-    Read from the manifest rather than from span boundaries: a release where
-    nothing changed produces no span edge but is still a real observation.
+    Delegates to `spans.release_dates`, which is the one place that knows the
+    manifest table spans every panel ever ingested. Offering a date this panel
+    was never observed on would present carried-forward state as a measurement.
     """
-    rows = connection.execute(
-        "SELECT DISTINCT release_date FROM snapshot_manifest "
-        "WHERE panel = ? ORDER BY release_date",
-        [panel],
-    ).fetchall()
-    return [str(row[0]) for row in rows]
+    return spans.release_dates(connection, panel)
 
 
 def genes(connection, allowed: set[str] | None = None) -> list[dict]:

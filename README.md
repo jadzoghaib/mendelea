@@ -236,8 +236,16 @@ nothing — the fastest possible way to lose the customer.
 mendelea case-demo   --out demo-cases.csv --count 800   # synthetic lab export
 mendelea case-load   --tenant demo-lab --file demo-cases.csv
 mendelea case-report --tenant demo-lab --out findings.json
-mendelea case-verify --tenant demo-lab                  # ledger integrity
+
+mendelea case-review --tenant demo-lab --case-ref CASE-00771 \
+                     --allele-id <id> --verdict RECONTACT \
+                     --rationale "now pathogenic, 3-star" --reviewer curator@lab
+mendelea case-log    --tenant demo-lab                  # the ledger
+mendelea case-verify --tenant demo-lab                  # chain integrity
 ```
+
+Each review is stamped with the evidence snapshot in view at the time, so the
+ledger records not only what was decided but what it was decided against.
 
 A laboratory supplies coordinates, what it reported, and when. Nothing else.
 No genome, no phenotype, no identifier. `case_ref` is their own pseudonymous

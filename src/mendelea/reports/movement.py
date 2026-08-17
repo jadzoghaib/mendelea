@@ -162,30 +162,10 @@ def movement_detail(connection, baseline: str, current: str,
     ).fetchall()
 
 
-CASE_MOVEMENT_SQL = """
-SELECT cv.case_ref,
-       cv.gene,
-       cv.allele_id,
-       cv.reported_classification,
-       cv.reported_on,
-       at_signout.bucket AS evidence_at_signout,
-       now_.bucket       AS evidence_now,
-       now_.stars        AS stars_now,
-       now_.clnsig_raw   AS clnsig_now,
-       now_.valid_from   AS changed_on
-FROM case_variant cv
-JOIN assertion_span at_signout
-       ON at_signout.allele_id = cv.allele_id
-      AND at_signout.valid_from <= cv.reported_on
-      AND at_signout.valid_to   >  cv.reported_on
-JOIN assertion_span now_
-       ON now_.allele_id = cv.allele_id
-      AND now_.is_current
-WHERE at_signout.bucket IS DISTINCT FROM now_.bucket
-ORDER BY now_.stars DESC, cv.reported_on
-"""
-
-
-def case_movement(connection):
-    """Movement for one tenant's reported variants. Requires a loaded case plane."""
-    return connection.execute(CASE_MOVEMENT_SQL).fetchall()
+# Case-level movement lives in `mendelea.cases.report`, which scopes every
+# query by tenant_id and accounts for rows it could not examine.
+#
+# An earlier draft of that query lived here. It was removed rather than left
+# unused: it read `FROM case_variant` with no tenant predicate while its
+# docstring claimed to serve "one tenant". Nothing called it, but dead code
+# that looks safe is how a cross-tenant leak eventually ships.
