@@ -63,8 +63,14 @@ class CaseLoadError(ValueError):
     pass
 
 
-def load_csv(path: Path, tenant_id: str, assembly: str = "GRCh38") -> tuple[list[CaseVariant], list[str]]:
+def load_csv(path: Path, tenant_id: str, assembly: str = "GRCh38",
+             reference=None) -> tuple[list[CaseVariant], list[str]]:
     """Parse a laboratory's export. Returns (variants, rejected row descriptions).
+
+    Pass `reference` to left-align indels while normalising. Unlike ClinVar,
+    a laboratory export carries no guarantee of left-alignment, and an
+    unaligned indel hashes to an identifier that matches nothing -- it drops
+    out of the report silently, as an absence rather than an error.
 
     Rejections are returned rather than raised: a real export always has a few
     unparseable rows, and silently dropping them would corrupt the denominator
@@ -83,7 +89,8 @@ def load_csv(path: Path, tenant_id: str, assembly: str = "GRCh38") -> tuple[list
         for line_no, row in enumerate(reader, start=2):
             try:
                 key = allele_id(
-                    assembly, row["contig"], int(row["pos"]), row["ref"], row["alt"]
+                    assembly, row["contig"], int(row["pos"]),
+                    row["ref"], row["alt"], reference=reference,
                 )
                 variants.append(
                     CaseVariant(

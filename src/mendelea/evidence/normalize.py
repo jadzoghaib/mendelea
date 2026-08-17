@@ -78,8 +78,18 @@ def trim(pos: int, ref: str, alt: str) -> tuple[int, str, str]:
     return pos, ref, alt
 
 
-def allele_id(assembly: str, contig: str, pos: int, ref: str, alt: str) -> str:
+def allele_id(assembly: str, contig: str, pos: int, ref: str, alt: str,
+              reference=None) -> str:
     """Stable identifier for a normalised allele.
+
+    Pass `reference` (anything with `.base_at(contig, pos)`) to left-align
+    indels before hashing. Without it the result is trim-only, which is
+    correct for input that is already left-aligned -- ClinVar's records are --
+    but not for arbitrary laboratory exports, where the same deletion inside a
+    repeat can be written at several positions and would fail to join.
+
+    Applying left-alignment to already-aligned input is a no-op, so adding a
+    reference never changes an identifier that was already right.
 
     Raises on alleles we cannot represent (symbolic ALTs like <DEL>, or
     anything non-ACGTN) rather than hashing garbage into the timeline.
@@ -90,7 +100,14 @@ def allele_id(assembly: str, contig: str, pos: int, ref: str, alt: str) -> str:
         raise ValueError(f"non-nucleotide allele: ref={ref!r} alt={alt!r}")
 
     contig = normalise_contig(contig)
-    pos, ref, alt = trim(int(pos), ref, alt)
+    pos = int(pos)
+
+    if reference is not None:
+        from .reference import left_align
+
+        pos, ref, alt = left_align(reference, contig, pos, ref, alt)
+
+    pos, ref, alt = trim(pos, ref, alt)
 
     blob = f"{assembly}\t{contig}\t{pos}\t{ref}\t{alt}".encode()
     return NAMESPACE + sha512t24u(blob)

@@ -9,13 +9,17 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from datetime import date
 from pathlib import Path
 
 from . import config as config_module
 from . import locks
+from .cases import model
+from .cases import report as case_report
 from .db import connect
+from .decisions import ledger
 from .evidence import clinvar, genes, snapshot, spans
 from .reports import movement, policy
 
@@ -238,6 +242,177 @@ def cmd_timeline(args) -> int:
     return 0
 
 
+def _reference_for_panel(cfg, panel_slug: str):
+    """Load reference sequence for a panel's gene regions, for left-alignment.
+
+    Degrades to None with a warning rather than failing the load: trim-only
+    normalisation still matches everything already left-aligned, which is most
+    of a real file. Silently degrading would be the unacceptable option.
+    """
+    from .evidence.reference import ReferenceCache
+
+    try:
+        _, symbols = genes.load_panel(_resolve_panel(panel_slug))
+        resolver = genes.GeneResolver(
+            cache_path=cfg.reference_dir / "gene_regions.json",
+            bundled=PANEL_DIR / "gene_regions.json",
+        )
+        reference = ReferenceCache(cfg.reference_dir / "sequence")
+        for region in resolver.resolve_all(symbols):
+            contig, start, end = region.padded()
+            reference.load_region(contig, start, end)
+        return reference
+    except Exception as exc:  # noqa: BLE001
+        print(f"  ! reference unavailable ({exc}); indels will not be left-aligned",
+              file=sys.stderr)
+        return None
+
+
+def cmd_case_demo(args) -> int:
+    """Write a synthetic laboratory export drawn from the evidence plane.
+
+    Lets the whole Phase 3 flow be demonstrated before any real customer file
+    exists. Sampled from variants that were genuinely uncertain at an early
+    release, with sign-out dates spread realistically after that.
+    """
+    import csv
+    import random
+
+    cfg = config_module.load()
+    random.seed(args.seed)
+
+    with connect(cfg.warehouse, read_only=True) as connection:
+        # Only dates this panel was actually observed on: sampling another
+        # panel's dates would produce sign-outs we can only answer with
+        # carried-forward state.
+        panel = spans.loaded_panel(connection)
+        releases = spans.release_dates(connection, panel)
+        if not releases:
+            print("no releases for the loaded panel", file=sys.stderr)
+            return 1
+        earliest = releases[0]
+        rows = connection.execute(
+            """
+            SELECT gene, contig, pos, ref, alt, bucket
+            FROM assertion_span
+            WHERE valid_from <= CAST($on AS DATE) AND valid_to > CAST($on AS DATE)
+              AND bucket IN ('UNCERTAIN','LIKELY_PATHOGENIC','PATHOGENIC')
+            ORDER BY random() LIMIT $n
+            """,
+            {"on": earliest, "n": args.count},
+        ).fetchall()
+
+    # Sign-outs land on the earlier half of our coverage, so most rows have a
+    # baseline to compare against. A deliberate few predate coverage entirely,
+    # so the reconciliation section has something real to report.
+    usable = releases[: max(1, len(releases) // 2)]
+    before_coverage = date.fromisoformat(earliest).replace(
+        year=date.fromisoformat(earliest).year - 3
+    ).isoformat()
+
+    label = {"UNCERTAIN": "VUS", "LIKELY_PATHOGENIC": "Likely pathogenic",
+             "PATHOGENIC": "Pathogenic"}
+    out = Path(args.out)
+    with out.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(["case_ref", "gene", "contig", "pos", "ref", "alt",
+                         "reported_classification", "reported_on"])
+        for index, (gene, contig, pos, ref, alt, bucket) in enumerate(rows, start=1):
+            signed = before_coverage if random.random() < 0.05 else random.choice(usable)
+            writer.writerow([f"CASE-{index:05d}", gene, contig, pos, ref, alt,
+                             label[bucket], signed])
+
+    print(f"wrote {len(rows)} synthetic reported variants to {out}")
+    print(f"sign-out dates drawn from {usable[0]} .. {usable[-1]}, "
+          f"with ~5% deliberately predating coverage")
+    return 0
+
+
+def cmd_case_load(args) -> int:
+    cfg = config_module.load()
+    reference = None if args.no_reference else _reference_for_panel(cfg, args.panel)
+
+    variants, rejected = model.load_csv(
+        Path(args.file), tenant_id=args.tenant, assembly=cfg.assembly,
+        reference=reference,
+    )
+
+    with connect(cfg.warehouse) as connection:
+        connection.execute(model.SCHEMA_DDL)
+        connection.execute("DELETE FROM case_variant WHERE tenant_id = ?", [args.tenant])
+        loaded = model.persist(connection, variants)
+
+    print(f"loaded {loaded} variants for tenant {args.tenant!r}")
+    if rejected:
+        print(f"rejected {len(rejected)} rows:")
+        for line in rejected[:10]:
+            print(f"    {line}")
+    return 0
+
+
+def cmd_case_report(args) -> int:
+    cfg = config_module.load()
+    with connect(cfg.warehouse, read_only=True) as connection:
+        events = policy.detect(connection)
+        rep = case_report.build(connection, args.tenant, policy.suspect_pairs(events))
+
+    r = rep.reconciliation
+    print(f"\n  MENDELEA REANALYSIS REPORT")
+    print(f"  tenant {rep.tenant_id}   evidence: {rep.evidence_panel}, "
+          f"{rep.evidence_from} .. {rep.evidence_to}")
+    print("  " + "=" * 64)
+    print("  RECONCILIATION   (every input row is accounted for)")
+    print(f"    variants loaded                  {r.loaded:>7,}")
+    print(f"    not found in evidence            {r.unmatched:>7,}")
+    print(f"    signed out before coverage       {r.before_coverage:>7,}")
+    print(f"    examined                         {r.examined:>7,}   {r.match_rate:.1%}")
+    if not r.is_sound():
+        print("    ** match rate below 90%: movement figures below are NOT")
+        print("       representative of this laboratory's back catalogue **")
+    print("  " + "-" * 64)
+    print(f"    unchanged since sign-out         {rep.unchanged:>7,}")
+    print(f"    moved                            {rep.moved:>7,}")
+    print(f"      -> pathogenic / likely         {rep.moved_to_pathogenic:>7,}")
+    print(f"      -> benign / likely             {rep.moved_to_benign:>7,}")
+    print(f"      -> conflicting                 {rep.moved_to_conflicting:>7,}"
+          f"   ({rep.policy_suspect} policy-suspect)")
+    print(f"      -> retracted from ClinVar      {rep.retracted:>7,}")
+    print("  " + "=" * 64)
+    print(f"    ACTIONABLE                       {rep.actionable:>7,}   "
+          f"{rep.actionable_rate:.1%} of examined")
+    print("  " + "=" * 64)
+
+    for finding in rep.findings[:args.limit]:
+        flag = "!" if finding["actionable"] else ("~" if finding["policy_suspect"] else " ")
+        print(f"  {flag} {finding['case_ref']}  {finding['gene']:<8} "
+              f"{finding['variant']:<24} {finding['evidence_at_signout']:<12} -> "
+              f"{finding['evidence_now']:<18} {'*' * (finding['review_status_now'] or 0)}")
+
+    if args.out:
+        Path(args.out).write_text(
+            json.dumps({
+                "tenant": rep.tenant_id,
+                "evidence_panel": rep.evidence_panel,
+                "evidence_from": rep.evidence_from,
+                "evidence_to": rep.evidence_to,
+                "reconciliation": rep.reconciliation.__dict__,
+                "findings": rep.findings,
+            }, indent=2),
+            encoding="utf-8",
+        )
+        print(f"\n  wrote {args.out}")
+    return 0
+
+
+def cmd_case_verify(args) -> int:
+    cfg = config_module.load()
+    with connect(cfg.warehouse) as connection:
+        intact, bad = ledger.verify(connection, args.tenant)
+    print(f"decision ledger for {args.tenant!r}: "
+          + ("intact" if intact else f"BROKEN at entry {bad}"))
+    return 0 if intact else 1
+
+
 def cmd_serve(args) -> int:
     """Run the time machine."""
     cfg = config_module.load()
@@ -331,6 +506,30 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=8000)
     p.set_defaults(func=cmd_serve)
+
+    p = sub.add_parser("case-demo", help="write a synthetic laboratory export")
+    p.add_argument("--out", default="demo-cases.csv")
+    p.add_argument("--count", type=int, default=500)
+    p.add_argument("--seed", type=int, default=7)
+    p.set_defaults(func=cmd_case_demo)
+
+    p = sub.add_parser("case-load", help="load a laboratory's reported variants")
+    p.add_argument("--tenant", required=True)
+    p.add_argument("--file", required=True)
+    p.add_argument("--panel", default="hereditary-cancer")
+    p.add_argument("--no-reference", action="store_true",
+                   help="skip left-alignment (faster, but indels may not match)")
+    p.set_defaults(func=cmd_case_load)
+
+    p = sub.add_parser("case-report", help="what has moved under a tenant's variants")
+    p.add_argument("--tenant", required=True)
+    p.add_argument("--limit", type=int, default=15)
+    p.add_argument("--out", default=None, help="also write findings as JSON")
+    p.set_defaults(func=cmd_case_report)
+
+    p = sub.add_parser("case-verify", help="check a tenant's decision ledger")
+    p.add_argument("--tenant", required=True)
+    p.set_defaults(func=cmd_case_verify)
 
     p = sub.add_parser("spans", help="rebuild the bitemporal assertion timeline")
     p.add_argument("--panel", default="spike")

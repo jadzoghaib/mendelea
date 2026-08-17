@@ -235,6 +235,42 @@ def build(connection, snapshot_root: Path, manifests: list[SnapshotManifest],
     return connection.execute("SELECT COUNT(*) FROM assertion_span").fetchone()[0]
 
 
+def loaded_panel(connection) -> str | None:
+    """Which panel `assertion_span` currently holds.
+
+    The single source of truth for this question. `snapshot_manifest`
+    accumulates every panel ever ingested, so reading a panel or a coverage
+    window from it unfiltered gives an answer belonging to whichever panel was
+    ingested last -- which has now caused the same class of bug three times
+    (slider stops, gene picker, report header). Ask here instead.
+    """
+    row = connection.execute(
+        "SELECT any_value(panel) FROM assertion_span"
+    ).fetchone()
+    return row[0] if row else None
+
+
+def coverage(connection, panel: str) -> tuple[str | None, str | None]:
+    """Earliest and latest release ingested *for one panel*."""
+    row = connection.execute(
+        "SELECT MIN(release_date), MAX(release_date) FROM snapshot_manifest "
+        "WHERE panel = ?",
+        [panel],
+    ).fetchone()
+    return (str(row[0]) if row and row[0] else None,
+            str(row[1]) if row and row[1] else None)
+
+
+def release_dates(connection, panel: str) -> list[str]:
+    """Every release date ingested for one panel, oldest first."""
+    rows = connection.execute(
+        "SELECT DISTINCT release_date FROM snapshot_manifest "
+        "WHERE panel = ? ORDER BY release_date",
+        [panel],
+    ).fetchall()
+    return [str(r[0]) for r in rows]
+
+
 def state_on(connection, allele_id: str, as_of: str):
     """What the evidence said about one allele on one date."""
     return connection.execute(

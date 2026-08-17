@@ -230,6 +230,70 @@ ACTIONABLE movement rate          7.2%   (excludes CONFLICTING entirely,
 moved when a rule changed would send it re-reviewing thousands of cases for
 nothing — the fastest possible way to lose the customer.
 
+## The case plane (Phase 3)
+
+```powershell
+mendelea case-demo   --out demo-cases.csv --count 800   # synthetic lab export
+mendelea case-load   --tenant demo-lab --file demo-cases.csv
+mendelea case-report --tenant demo-lab --out findings.json
+mendelea case-verify --tenant demo-lab                  # ledger integrity
+```
+
+A laboratory supplies coordinates, what it reported, and when. Nothing else.
+No genome, no phenotype, no identifier. `case_ref` is their own pseudonymous
+key and we never learn what it points to.
+
+### Reconciliation comes before findings
+
+The movement query is the easy half. What decides whether the report is
+trustworthy is the accounting of what could *not* be answered, because there
+are two ways to fail silently and both look exactly like "nothing changed":
+
+- the variant is **not in the evidence plane** — wrong panel, never in
+  ClinVar, a coordinate that did not normalise;
+- the variant is there, but was **signed out before our earliest snapshot**,
+  so we cannot say what the evidence said at the time.
+
+Every input row therefore lands in exactly one bucket, and the reconciliation
+is printed *before* any finding. Below a 90% match rate the report says so
+explicitly rather than letting the movement figures be read as representative.
+
+```
+RECONCILIATION   (every input row is accounted for)
+  variants loaded                      800
+  not found in evidence                  0
+  signed out before coverage            38
+  examined                             762    95.3%
+```
+
+A report that quietly drops what it could not examine tells a customer their
+back catalogue is clean when in truth it was never looked at.
+
+### Left-alignment, and why it had to come first
+
+ClinVar left-aligns its records; a laboratory export carries no such
+guarantee. Inside a repeat the same deletion is writable at several positions,
+all valid VCF:
+
+```
+reference  ... G T T T T T C ...
+                 ^ ^ ^ ^ ^      "delete a T" — five correct spellings
+```
+
+An unaligned indel hashes to an identifier that matches nothing. It does not
+error; it simply drops out of the report. `evidence/reference.py` fetches the
+reference for each gene region (a few MB for the whole panel, the same
+fetch-the-region trick the ingest uses) and rolls indels left before hashing.
+
+Verified as a safe migration on real data: recomputing identifiers for
+**30,574 ClinVar variants including 6,546 indels changed exactly none of
+them** — confirming ClinVar is already left-aligned, that the algorithm is
+idempotent on real input, and that no re-ingest was needed.
+
+If the reference cannot be fetched the load warns loudly and continues with
+trim-only. Degrading silently would reintroduce precisely the join failures
+this exists to prevent.
+
 ## Known limitations
 
 These are real and should be read before quoting any number this produces.
