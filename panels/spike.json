@@ -1,0 +1,5 @@
+{
+  "name": "spike",
+  "description": "Five high-traffic genes. Small enough to ingest a long release series in minutes, which is what the Phase 0 gate needs.",
+  "genes": ["BRCA1", "BRCA2", "MLH1", "MSH2", "TP53"]
+}

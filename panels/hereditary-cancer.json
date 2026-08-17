@@ -1,0 +1,11 @@
+{
+  "name": "hereditary-cancer",
+  "description": "Core hereditary cancer predisposition genes. Chosen for the spike because VUS burden here is high, the genes are on almost every clinical panel, and reclassification in them has direct management consequences.",
+  "genes": [
+    "BRCA1", "BRCA2", "PALB2", "ATM", "CHEK2", "TP53", "PTEN", "STK11",
+    "CDH1", "NF1", "BARD1", "BRIP1", "RAD51C", "RAD51D",
+    "MLH1", "MSH2", "MSH6", "PMS2", "EPCAM",
+    "APC", "MUTYH", "SMAD4", "BMPR1A", "POLD1", "POLE",
+    "VHL", "RET", "MEN1", "SDHB", "SDHC", "SDHD"
+  ]
+}

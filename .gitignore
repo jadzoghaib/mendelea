@@ -1,0 +1,30 @@
+# Data and build artefacts never belong in the repo. The evidence plane grows
+# to tens of gigabytes and lives at $MENDELEA_DATA_DIR (default ~/mendelea-data),
+# deliberately outside any synced folder.
+*.duckdb
+*.duckdb.wal
+*.parquet
+*.parquet.partial
+*.manifest.json
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# The bundled gene coordinate cache IS tracked on purpose -- it lets a fresh
+# clone ingest the standard panels with no external lookup.
+!panels/gene_regions.json

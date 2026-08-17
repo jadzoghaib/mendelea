@@ -1,0 +1,188 @@
+{
+  "APC": {
+    "contig": "5",
+    "end": 112846239,
+    "source": "mygene",
+    "start": 112707452
+  },
+  "ATM": {
+    "contig": "11",
+    "end": 108369102,
+    "source": "ensembl",
+    "start": 108222788
+  },
+  "BARD1": {
+    "contig": "2",
+    "end": 214809726,
+    "source": "mygene",
+    "start": 214724705
+  },
+  "BMPR1A": {
+    "contig": "10",
+    "end": 86932825,
+    "source": "mygene",
+    "start": 86755751
+  },
+  "BRCA1": {
+    "contig": "17",
+    "end": 43170245,
+    "source": "ensembl",
+    "start": 43044292
+  },
+  "BRCA2": {
+    "contig": "13",
+    "end": 32400268,
+    "source": "mygene",
+    "start": 32315086
+  },
+  "BRIP1": {
+    "contig": "17",
+    "end": 61863561,
+    "source": "mygene",
+    "start": 61679139
+  },
+  "CDH1": {
+    "contig": "16",
+    "end": 68835543,
+    "source": "mygene",
+    "start": 68737242
+  },
+  "CHEK2": {
+    "contig": "22",
+    "end": 28742422,
+    "source": "ensembl",
+    "start": 28687738
+  },
+  "EPCAM": {
+    "contig": "2",
+    "end": 47387601,
+    "source": "ensembl",
+    "start": 47345158
+  },
+  "MEN1": {
+    "contig": "11",
+    "end": 64811294,
+    "source": "mygene",
+    "start": 64803500
+  },
+  "MLH1": {
+    "contig": "3",
+    "end": 37051505,
+    "source": "ensembl",
+    "start": 36992834
+  },
+  "MSH2": {
+    "contig": "2",
+    "end": 47663146,
+    "source": "mygene",
+    "start": 47403067
+  },
+  "MSH6": {
+    "contig": "2",
+    "end": 47810109,
+    "source": "mygene",
+    "start": 47695530
+  },
+  "MUTYH": {
+    "contig": "1",
+    "end": 45340893,
+    "source": "mygene",
+    "start": 45329163
+  },
+  "NF1": {
+    "contig": "17",
+    "end": 31382116,
+    "source": "mygene",
+    "start": 31094883
+  },
+  "PALB2": {
+    "contig": "16",
+    "end": 23641342,
+    "source": "ensembl",
+    "start": 23603158
+  },
+  "PMS2": {
+    "contig": "7",
+    "end": 6009130,
+    "source": "ensembl",
+    "start": 5970925
+  },
+  "POLD1": {
+    "contig": "19",
+    "end": 50418018,
+    "source": "ensembl",
+    "start": 50384204
+  },
+  "POLE": {
+    "contig": "12",
+    "end": 132687376,
+    "source": "ensembl",
+    "start": 132623753
+  },
+  "PTEN": {
+    "contig": "10",
+    "end": 87971930,
+    "source": "ensembl",
+    "start": 87862638
+  },
+  "RAD51C": {
+    "contig": "17",
+    "end": 58735611,
+    "source": "ensembl",
+    "start": 58692569
+  },
+  "RAD51D": {
+    "contig": "17",
+    "end": 35121522,
+    "source": "ensembl",
+    "start": 35092221
+  },
+  "RET": {
+    "contig": "10",
+    "end": 43130351,
+    "source": "ensembl",
+    "start": 43077026
+  },
+  "SDHB": {
+    "contig": "1",
+    "end": 17054210,
+    "source": "ensembl",
+    "start": 17018664
+  },
+  "SDHC": {
+    "contig": "1",
+    "end": 161363774,
+    "source": "ensembl",
+    "start": 161314352
+  },
+  "SDHD": {
+    "contig": "11",
+    "end": 112120016,
+    "source": "mygene",
+    "start": 112086361
+  },
+  "SMAD4": {
+    "contig": "18",
+    "end": 51085045,
+    "source": "mygene",
+    "start": 51028528
+  },
+  "STK11": {
+    "contig": "19",
+    "end": 1228431,
+    "source": "mygene",
+    "start": 1177558
+  },
+  "TP53": {
+    "contig": "17",
+    "end": 7687546,
+    "source": "mygene",
+    "start": 7661779
+  },
+  "VHL": {
+    "contig": "3",
+    "end": 10153676,
+    "source": "mygene",
+    "start": 10141764
+  }
+}

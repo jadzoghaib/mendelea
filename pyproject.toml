@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mendelea"
+version = "0.1.0"
+description = "An evidence timeline for reported genetic variants"
+requires-python = ">=3.11"
+dependencies = [
+    "duckdb>=1.0",
+    "pyarrow>=15",
+    "requests>=2.31",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[project.scripts]
+mendelea = "mendelea.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-q"
+markers = [
+    "network: hits the live NCBI endpoint; deselect with -m 'not network'",
+]
