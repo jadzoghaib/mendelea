@@ -115,8 +115,13 @@ def load_csv(path: Path, tenant_id: str, assembly: str = "GRCh38",
 def persist(connection, variants: list[CaseVariant]) -> int:
     connection.execute(SCHEMA_DDL)
     for variant in variants:
+        # Columns named explicitly, not positional: it keeps tenant_id visible
+        # in the statement, which is what the isolation check reads.
         connection.execute(
-            "INSERT INTO case_variant VALUES (?,?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO case_variant "
+            "(tenant_id, case_ref, allele_id, gene, contig, pos, ref, alt, "
+            " reported_classification, reported_on) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?)",
             [
                 variant.tenant_id, variant.case_ref, variant.allele_id,
                 variant.gene, variant.contig, variant.pos, variant.ref,

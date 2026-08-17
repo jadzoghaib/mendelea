@@ -23,6 +23,8 @@ from urllib.parse import parse_qs, urlparse
 
 import duckdb
 
+from .. import tenancy
+from ..cases import report as case_report
 from . import queries
 
 STATIC = Path(__file__).resolve().parent / "static"
@@ -92,6 +94,20 @@ def make_handler(warehouse: Path):
         def _json(self, payload, status: int = 200):
             self._send(status, json.dumps(payload).encode(), "application/json")
 
+        def _authenticate(self) -> str:
+            """Resolve the bearer token to a tenant, or refuse.
+
+            The tenant is never read from a query parameter. If it were, a
+            valid token for one laboratory could be pointed at another's
+            data -- authentication without authorisation.
+            """
+            header = self.headers.get("Authorization", "")
+            token = header[7:].strip() if header.lower().startswith("bearer ") else None
+            tenant = tenancy.verify(conn(), token)
+            if not tenant:
+                raise ApiError(401, "missing or invalid bearer token")
+            return tenant
+
         def do_GET(self):  # noqa: N802 - stdlib naming
             parsed = urlparse(self.path)
             query = parse_qs(parsed.query)
@@ -122,6 +138,32 @@ def make_handler(warehouse: Path):
                 if parsed.path == "/api/timeline":
                     allele = require(one("allele_id"), SAFE_ID, "allele_id")
                     return self._json({"timeline": queries.timeline(conn(), allele)})
+
+                if parsed.path == "/api/case/report":
+                    # The only endpoint that touches tenant data. The tenant is
+                    # taken from the token and never from the request, so a
+                    # caller cannot ask for someone else's report.
+                    tenant = self._authenticate()
+                    rep = case_report.build(conn(), tenant)
+                    return self._json({
+                        "tenant": rep.tenant_id,
+                        "evidence_panel": rep.evidence_panel,
+                        "evidence_from": rep.evidence_from,
+                        "evidence_to": rep.evidence_to,
+                        "reconciliation": {
+                            "loaded": rep.reconciliation.loaded,
+                            "unmatched": rep.reconciliation.unmatched,
+                            "before_coverage": rep.reconciliation.before_coverage,
+                            "examined": rep.reconciliation.examined,
+                            "match_rate": round(rep.reconciliation.match_rate, 4),
+                            "sound": rep.reconciliation.is_sound(),
+                        },
+                        "unchanged": rep.unchanged,
+                        "moved": rep.moved,
+                        "actionable": rep.actionable,
+                        "policy_suspect": rep.policy_suspect,
+                        "findings": rep.findings,
+                    })
 
                 raise ApiError(404, "no such endpoint")
 

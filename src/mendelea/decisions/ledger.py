@@ -103,7 +103,10 @@ def append(connection, tenant_id: str, allele_id: str, case_ref: str,
     entry_hash = compute_hash(payload, prev_hash)
 
     connection.execute(
-        "INSERT INTO decision_ledger VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+        "INSERT INTO decision_ledger "
+        "(seq, tenant_id, allele_id, case_ref, verdict, rationale, reviewer, "
+        " evidence_snapshot_id, created_at, prev_hash, entry_hash) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
         [
             payload["seq"], payload["tenant_id"], payload["allele_id"],
             payload["case_ref"], payload["verdict"], payload["rationale"],

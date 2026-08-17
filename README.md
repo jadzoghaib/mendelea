@@ -302,6 +302,45 @@ If the reference cannot be fetched the load warns loudly and continues with
 trim-only. Degrading silently would reintroduce precisely the join failures
 this exists to prevent.
 
+## Tenants and isolation
+
+```powershell
+mendelea tenant-create --tenant lab-a --name "Laboratory A" --label laptop
+mendelea tenant-list
+mendelea tenant-revoke --token-id <id>
+```
+
+Tokens are `mdl.<token_id>.<secret>`. The `token_id` is public so a token can
+be listed and revoked without knowing the secret; only the SHA-256 of the
+secret is stored, so a database dump yields no working credential. The
+plaintext is printed once and is not recoverable.
+
+`/api/case/report` is the only endpoint that touches tenant data. **The tenant
+is taken from the token and never from the request** — otherwise a valid token
+for one laboratory could be aimed at another's data, which is authentication
+without authorisation. Verified live: a rival token sent with
+`?tenant=demo-lab` still returns its own empty result.
+
+The time machine stays public. It serves ClinVar, which is public.
+
+### Isolation is enforced, not merely intended
+
+Authentication is the smaller half. The defect that actually occurred was a
+query over `case_variant` with no tenant predicate whose docstring claimed to
+serve one tenant — a perfectly authenticated caller would have received every
+laboratory's variants. So `tests/test_tenant_isolation.py` walks the AST of
+every source file and fails the build if any SQL string naming a tenant-owned
+table omits `tenant_id`:
+
+```
+FAILED  SQL touching tenant-owned tables without a tenant_id reference:
+          reports/movement.py:165 -> SELECT cv.case_ref ... FROM case_variant cv
+```
+
+That check generalises in a way tests do not: it catches queries nobody
+thought to call. It is also why the INSERTs name their columns explicitly
+rather than relying on positional order.
+
 ## Known limitations
 
 These are real and should be read before quoting any number this produces.

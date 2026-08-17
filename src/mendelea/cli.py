@@ -16,6 +16,7 @@ from pathlib import Path
 
 from . import config as config_module
 from . import locks
+from . import tenancy
 from .cases import model
 from .cases import report as case_report
 from .db import connect
@@ -266,6 +267,50 @@ def _reference_for_panel(cfg, panel_slug: str):
         print(f"  ! reference unavailable ({exc}); indels will not be left-aligned",
               file=sys.stderr)
         return None
+
+
+def cmd_tenant_create(args) -> int:
+    cfg = config_module.load()
+    with connect(cfg.warehouse) as connection:
+        try:
+            tenancy.create_tenant(connection, args.tenant, args.name)
+        except tenancy.AuthError as exc:
+            if not args.token_only:
+                print(f"error: {exc}", file=sys.stderr)
+                return 1
+        token = tenancy.issue_token(connection, args.tenant, label=args.label)
+
+    print(f"tenant  {token.tenant_id}")
+    print(f"token   {token.plaintext}")
+    print("\n  This is shown once and is not recoverable. Only its hash is stored.")
+    return 0
+
+
+def cmd_tenant_list(args) -> int:
+    cfg = config_module.load()
+    with connect(cfg.warehouse) as connection:
+        tenants = tenancy.list_tenants(connection)
+        detail = {t["tenant_id"]: tenancy.list_tokens(connection, t["tenant_id"])
+                  for t in tenants}
+
+    if not tenants:
+        print("no tenants registered")
+        return 0
+    for tenant in tenants:
+        print(f"  {tenant['tenant_id']:<16} {tenant['name']:<24} "
+              f"{tenant['active_tokens']} active, {tenant['revoked_tokens']} revoked")
+        for token in detail[tenant["tenant_id"]]:
+            state = "revoked" if token["revoked_at"] else "active"
+            print(f"      {token['token_id']}  {state:<8} {token['label']}")
+    return 0
+
+
+def cmd_tenant_revoke(args) -> int:
+    cfg = config_module.load()
+    with connect(cfg.warehouse) as connection:
+        done = tenancy.revoke(connection, args.token_id)
+    print(f"token {args.token_id}: " + ("revoked" if done else "unknown or already revoked"))
+    return 0 if done else 1
 
 
 def cmd_case_demo(args) -> int:
@@ -565,6 +610,21 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=8000)
     p.set_defaults(func=cmd_serve)
+
+    p = sub.add_parser("tenant-create", help="register a tenant and mint a token")
+    p.add_argument("--tenant", required=True)
+    p.add_argument("--name", default=None)
+    p.add_argument("--label", default="", help="what this token is for")
+    p.add_argument("--token-only", action="store_true",
+                   help="tenant already exists; just mint another token")
+    p.set_defaults(func=cmd_tenant_create)
+
+    p = sub.add_parser("tenant-list", help="list tenants and their tokens")
+    p.set_defaults(func=cmd_tenant_list)
+
+    p = sub.add_parser("tenant-revoke", help="revoke a token by its id")
+    p.add_argument("--token-id", required=True)
+    p.set_defaults(func=cmd_tenant_revoke)
 
     p = sub.add_parser("case-demo", help="write a synthetic laboratory export")
     p.add_argument("--out", default="demo-cases.csv")
