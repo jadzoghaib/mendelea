@@ -1,0 +1,196 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mendelea — evidence time machine</title>
+<style>
+  :root{
+    --bg:#0e1116; --panel:#151a21; --panel-2:#1b2129; --line:#262d38;
+    --ink:#e6edf3; --ink-dim:#8b98a8; --ink-faint:#5c6874;
+    --accent:#4c9aff;
+    --path:#f2555a; --lpath:#f08a4b; --vus:#c9a227;
+    --lben:#3fb6a8; --ben:#3fa45b; --confl:#a071d8; --other:#5c6874;
+    --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+       font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
+  header{display:flex;align-items:baseline;gap:16px;padding:14px 22px;
+         border-bottom:1px solid var(--line);background:var(--panel)}
+  .brand{font-weight:600;letter-spacing:.14em;font-size:13px}
+  .sub{color:var(--ink-faint);font-size:12px;font-family:var(--mono)}
+  .ruo{margin-left:auto;font-size:11px;color:var(--ink-faint);
+       border:1px solid var(--line);padding:3px 8px;border-radius:3px}
+  main{max-width:1180px;margin:0 auto;padding:22px}
+
+  .stage{background:var(--panel);border:1px solid var(--line);
+         border-radius:6px;padding:20px 22px;margin-bottom:18px}
+  .controls{display:flex;gap:14px;align-items:center;flex-wrap:wrap;margin-bottom:18px}
+  select{background:var(--panel-2);color:var(--ink);border:1px solid var(--line);
+         border-radius:4px;padding:7px 10px;font-family:var(--mono);font-size:13px}
+  .date{font-family:var(--mono);font-size:26px;font-weight:600;letter-spacing:.02em;
+        min-width:150px}
+  input[type=range]{flex:1;min-width:260px;accent-color:var(--accent)}
+  .ticks{display:flex;justify-content:space-between;font-family:var(--mono);
+         font-size:10px;color:var(--ink-faint);margin-top:-6px}
+
+  .headline{font-size:17px;line-height:1.65}
+  .headline b{font-family:var(--mono);font-size:22px}
+  .big{color:var(--accent)}
+  .caption{margin-top:10px;color:var(--ink-dim);font-size:13px;font-style:italic}
+
+  table{width:100%;border-collapse:collapse;font-family:var(--mono);font-size:12.5px}
+  th{text-align:left;color:var(--ink-faint);font-weight:500;padding:7px 9px;
+     border-bottom:1px solid var(--line);position:sticky;top:0;background:var(--panel);
+     font-size:11px;letter-spacing:.06em;text-transform:uppercase}
+  td{padding:6px 9px;border-bottom:1px solid #1c222b}
+  tbody tr{cursor:pointer}
+  tbody tr:hover{background:var(--panel-2)}
+  tr.moved td:first-child{box-shadow:inset 3px 0 0 var(--accent)}
+  .wrap{background:var(--panel);border:1px solid var(--line);border-radius:6px;
+        overflow:auto;max-height:60vh}
+
+  .chip{display:inline-block;padding:1px 7px;border-radius:3px;font-size:11px;
+        font-weight:600;letter-spacing:.03em}
+  .PATHOGENIC{background:rgba(242,85,90,.16);color:var(--path)}
+  .LIKELY_PATHOGENIC{background:rgba(240,138,75,.16);color:var(--lpath)}
+  .UNCERTAIN{background:rgba(201,162,39,.16);color:var(--vus)}
+  .LIKELY_BENIGN{background:rgba(63,182,168,.16);color:var(--lben)}
+  .BENIGN{background:rgba(63,164,91,.16);color:var(--ben)}
+  .CONFLICTING{background:rgba(160,113,216,.16);color:var(--confl)}
+  .OTHER,.ABSENT{background:rgba(92,104,116,.16);color:var(--other)}
+  .arrow{color:var(--ink-faint);padding:0 5px}
+  .stars{color:var(--vus);letter-spacing:-1px}
+
+  dialog{background:var(--panel);color:var(--ink);border:1px solid var(--line);
+         border-radius:8px;padding:0;max-width:640px;width:92%}
+  dialog::backdrop{background:rgba(0,0,0,.62)}
+  .dh{padding:15px 20px;border-bottom:1px solid var(--line);
+      display:flex;justify-content:space-between;align-items:center}
+  .db{padding:16px 20px}
+  .step{display:flex;gap:14px;padding:9px 0;border-bottom:1px solid #1c222b;
+        font-family:var(--mono);font-size:12.5px}
+  .step .when{color:var(--ink-faint);min-width:190px}
+  button{background:var(--panel-2);color:var(--ink);border:1px solid var(--line);
+         border-radius:4px;padding:5px 11px;cursor:pointer;font-size:13px}
+  .empty{padding:34px;text-align:center;color:var(--ink-faint)}
+</style>
+</head>
+<body>
+<header>
+  <span class="brand">MENDELEA</span>
+  <span class="sub" id="ctx">loading…</span>
+  <span class="ruo">RESEARCH USE ONLY · evidence movement, not classification</span>
+</header>
+
+<main>
+  <div class="stage">
+    <div class="controls">
+      <select id="gene"></select>
+      <span class="date" id="date">—</span>
+      <input type="range" id="slider" min="0" max="0" value="0" step="1">
+    </div>
+    <div class="ticks"><span id="tick0"></span><span id="tick1"></span></div>
+    <div class="headline" id="headline"></div>
+    <div class="caption" id="caption"></div>
+  </div>
+
+  <div class="wrap">
+    <table>
+      <thead><tr>
+        <th>position</th><th>change</th><th>variation</th>
+        <th>as of date</th><th></th><th>today</th><th>rev</th>
+      </tr></thead>
+      <tbody id="rows"></tbody>
+    </table>
+    <div class="empty" id="empty" hidden>no variants for this gene on this date</div>
+  </div>
+</main>
+
+<dialog id="dlg">
+  <div class="dh"><b id="dlgTitle"></b><button onclick="dlg.close()">close</button></div>
+  <div class="db" id="dlgBody"></div>
+</dialog>
+
+<script>
+const $ = id => document.getElementById(id);
+let RELEASES = [];
+
+const chip = b => `<span class="chip ${b}">${b.replace(/_/g,' ').toLowerCase()}</span>`;
+const stars = n => n > 0 ? '★'.repeat(n) : '·';
+const fmt = n => n.toLocaleString();
+
+async function boot(){
+  const c = await (await fetch('/api/context')).json();
+  RELEASES = c.releases;
+  $('ctx').textContent =
+    `panel ${c.panel.panel} · ${fmt(c.panel.alleles)} variants · ${c.panel.genes} genes · ${RELEASES.length} releases`;
+
+  $('gene').innerHTML = c.genes
+    .map(g => `<option value="${g.gene}">${g.gene} — ${fmt(g.alleles)} variants, ${g.moved_pct}% moved</option>`)
+    .join('');
+
+  const s = $('slider');
+  s.max = RELEASES.length - 1;
+  s.value = 0;                       // open at the earliest release: the past is the point
+  $('tick0').textContent = RELEASES[0];
+  $('tick1').textContent = RELEASES[RELEASES.length - 1];
+
+  s.addEventListener('input', render);
+  $('gene').addEventListener('change', render);
+  render();
+}
+
+async function render(){
+  const on = RELEASES[$('slider').value];
+  const gene = $('gene').value;
+  $('date').textContent = on;
+
+  const d = await (await fetch(`/api/variants?gene=${encodeURIComponent(gene)}&on=${on}`)).json();
+  if (d.error){ $('headline').textContent = d.error; return; }
+  const h = d.headline;
+
+  $('headline').innerHTML =
+    `On <b>${on}</b>, <b>${fmt(h.uncertain)}</b> ${gene} variants were classified ` +
+    `${chip('UNCERTAIN')}.<br>` +
+    `<b class="big">${fmt(h.actionable)}</b> of those — <b class="big">${h.actionable_pct}%</b> — ` +
+    `are today classified ${chip('PATHOGENIC')} or ${chip('BENIGN')}.`;
+
+  $('caption').textContent = h.actionable
+    ? 'A report signed out on this date carried a conclusion the evidence no longer supports. Nothing told the laboratory.'
+    : 'Nothing in this gene has moved out of uncertain since this date.';
+
+  const rows = d.variants.map(v => `
+    <tr class="${v.moved ? 'moved' : ''}" onclick="showTimeline('${v.allele_id}','${v.gene} ${v.contig}:${v.pos} ${v.ref}>${v.alt}')">
+      <td>${v.contig}:${v.pos}</td>
+      <td>${v.ref}>${v.alt}</td>
+      <td>${v.variation_id}</td>
+      <td>${chip(v.bucket)}</td>
+      <td class="arrow">${v.moved ? '→' : ''}</td>
+      <td>${v.moved ? chip(v.now_bucket) : '<span style="color:var(--ink-faint)">unchanged</span>'}</td>
+      <td class="stars">${stars(v.now_stars)}</td>
+    </tr>`).join('');
+
+  $('rows').innerHTML = rows;
+  $('empty').hidden = d.variants.length > 0;
+}
+
+async function showTimeline(alleleId, label){
+  const d = await (await fetch(`/api/timeline?allele_id=${encodeURIComponent(alleleId)}`)).json();
+  $('dlgTitle').textContent = label;
+  $('dlgBody').innerHTML = d.timeline.map(s => `
+    <div class="step">
+      <span class="when">${s.from} → ${s.to || 'now'}</span>
+      <span>${chip(s.bucket)} <span class="stars">${stars(s.stars)}</span></span>
+    </div>`).join('')
+    + `<p style="color:var(--ink-faint);font-size:12px;margin-top:14px">
+         Each row is an observed span between ingested ClinVar releases.
+         Boundaries are release dates, not the dates a submitter acted.</p>`;
+  $('dlg').showModal();
+}
+
+boot();
+</script>
+</body>
+</html>

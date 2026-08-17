@@ -111,9 +111,42 @@ mendelea ingest --panel spike --from 2019 --to 2026 --per-year 1
 mendelea spans  --panel spike
 mendelea spike  --panel spike            # the Phase 0 gate
 mendelea timeline --gene BRCA1 --on 2019-06-03
+mendelea provenance --panel spike        # integrity + reproducibility audit
+mendelea serve --port 8000               # the time machine
 ```
 
-`ingest` is idempotent: existing snapshots are skipped, never rewritten.
+`ingest` is idempotent: existing snapshots are skipped, never rewritten. It
+takes an advisory lock per panel — a second concurrent run is refused rather
+than allowed to double the load on NCBI and halve everyone's bandwidth. Pass
+`--force` to steal a lock from a run you know is dead.
+
+## The time machine (Phase 2)
+
+`mendelea serve` opens a read-only view on the timeline. Pick a gene, drag the
+slider across ingested releases, and the table re-renders as the evidence
+stood on that date — with what each variant is classified as *today* beside
+it.
+
+The headline it exists to deliver:
+
+> On **2018-12-25**, **518** TP53 variants were classified *uncertain*.
+> **102** of those — **19.7%** — are today classified pathogenic or benign.
+
+Stdlib only, no build step, no external assets. That is deliberate: this is
+what goes in front of a laboratory in a first meeting, and every dependency is
+one more thing that can fail on someone else's laptop. The query layer
+(`web/queries.py`) is separate from transport, so moving to FastAPI is an
+adapter rather than a rewrite.
+
+Read-only, public ClinVar data only. The case and decision planes are not
+reachable from it — serving those needs auth and tenant isolation (Phase 3).
+
+Reclassification rates by gene, 2018→2025, from the running demo:
+
+```
+BRCA2 28.2%   MSH2 25.4%   VHL  23.3%   ...   CHEK2 12.8%
+TP53  28.0%   BRCA1 25.0%  STK11 22.8%        NF1   10.6%   EPCAM 3.4%
+```
 
 ---
 

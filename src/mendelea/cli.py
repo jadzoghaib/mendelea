@@ -238,6 +238,19 @@ def cmd_timeline(args) -> int:
     return 0
 
 
+def cmd_serve(args) -> int:
+    """Run the time machine."""
+    cfg = config_module.load()
+    if not cfg.warehouse.exists():
+        print("no warehouse; run ingest then spans first", file=sys.stderr)
+        return 1
+
+    from .web.server import serve
+
+    serve(cfg.warehouse, host=args.host, port=args.port)
+    return 0
+
+
 def cmd_provenance(args) -> int:
     """Audit every snapshot: does its content still hash to what we recorded,
     and do we know which code produced it?
@@ -313,6 +326,11 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("provenance", help="audit snapshot provenance")
     p.add_argument("--panel", default=None)
     p.set_defaults(func=cmd_provenance)
+
+    p = sub.add_parser("serve", help="run the evidence time machine")
+    p.add_argument("--host", default="127.0.0.1")
+    p.add_argument("--port", type=int, default=8000)
+    p.set_defaults(func=cmd_serve)
 
     p = sub.add_parser("spans", help="rebuild the bitemporal assertion timeline")
     p.add_argument("--panel", default="spike")
