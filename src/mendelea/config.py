@@ -28,6 +28,32 @@ def _env_path(name: str, default: Path) -> Path:
 DEFAULT_DATA_DIR = Path.home() / "mendelea-data"
 
 
+def panel_dir() -> Path:
+    """Where panel definitions live.
+
+    Resolved rather than hardcoded, because two modules previously each
+    computed it from a different parent depth -- cli.py used parents[2],
+    web/server.py used parents[3]. Both happened to work from a source
+    checkout and both would break on an installed package, where the panels
+    are not beside the code at all. When that happens the gene picker silently
+    stops filtering to the panel rather than failing, which is the kind of
+    quiet regression worth spending a function to avoid.
+    """
+    override = os.environ.get("MENDELEA_PANEL_DIR")
+    if override:
+        return Path(override).expanduser()
+
+    here = Path(__file__).resolve()
+    for candidate in (
+        here.parent / "panels",        # shipped inside the package
+        here.parents[2] / "panels",    # source checkout: src/mendelea -> repo root
+        Path.cwd() / "panels",
+    ):
+        if candidate.is_dir():
+            return candidate
+    return here.parents[2] / "panels"  # best guess, for the error message
+
+
 @dataclass
 class Config:
     """Resolved paths and knobs for one run."""
@@ -56,18 +82,13 @@ class Config:
         """DuckDB file holding manifests and derived tables."""
         return self.data_dir / "mendelea.duckdb"
 
-    @property
-    def tenant_dir(self) -> Path:
-        """Case and decision planes. Per tenant, tiny, never mixed with evidence."""
-        return self.data_dir / "tenants"
+    # Note: the case and decision planes live in the warehouse, in tables
+    # scoped by tenant_id, not in per-tenant directories. An earlier
+    # `tenant_dir` here created an empty directory that implied a storage
+    # layout which never existed -- removed rather than left to mislead.
 
     def ensure_dirs(self) -> None:
-        for path in (
-            self.snapshot_dir,
-            self.cache_dir,
-            self.reference_dir,
-            self.tenant_dir,
-        ):
+        for path in (self.snapshot_dir, self.cache_dir, self.reference_dir):
             path.mkdir(parents=True, exist_ok=True)
 
 

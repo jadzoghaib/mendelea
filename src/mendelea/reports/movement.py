@@ -26,7 +26,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 # Buckets a laboratory would act on if a variant it reported as VUS landed there.
-ACTIONABLE_BUCKETS = ("PATHOGENIC", "LIKELY_PATHOGENIC", "BENIGN", "LIKELY_BENIGN")
+# "Actionable" is defined once, in evidence/clinvar.py, beside the buckets it
+# names. It previously existed here and in cases/report.py as well -- three
+# copies of one clinical rule, identical only until somebody edits one of them
+# and the others silently disagree. Nothing in this module needs it, so it is
+# not re-exported either.
 
 
 @dataclass

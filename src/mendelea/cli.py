@@ -24,8 +24,7 @@ from .decisions import ledger
 from .evidence import clinvar, genes, snapshot, spans
 from .reports import movement, policy
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-PANEL_DIR = REPO_ROOT / "panels"
+PANEL_DIR = config_module.panel_dir()
 
 
 def _resolve_panel(name: str) -> Path:
@@ -402,7 +401,7 @@ def cmd_case_report(args) -> int:
         rep = case_report.build(connection, args.tenant, policy.suspect_pairs(events))
 
     r = rep.reconciliation
-    print(f"\n  MENDELEA REANALYSIS REPORT")
+    print("\n  MENDELEA REANALYSIS REPORT")
     print(f"  tenant {rep.tenant_id}   evidence: {rep.evidence_panel}, "
           f"{rep.evidence_from} .. {rep.evidence_to}")
     print("  " + "=" * 64)

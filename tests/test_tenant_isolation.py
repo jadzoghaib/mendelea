@@ -33,16 +33,59 @@ SRC = Path(__file__).resolve().parents[1] / "src" / "mendelea"
 TENANT_OWNED = ("case_variant", "decision_ledger")
 
 
+def _literal_text(node) -> str | None:
+    """The literal text of a string node, including f-strings.
+
+    f-strings are `JoinedStr`, not `Constant`. An earlier version of this
+    scanner walked only `Constant`, so an f-string SQL statement would have
+    slipped past it entirely -- a guard with a silent bypass, which is worse
+    than no guard because it manufactures confidence. Interpolated values are
+    ignored; only the literal parts are inspected, which is where a table name
+    and a WHERE clause actually appear.
+    """
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.JoinedStr):
+        return "".join(
+            part.value for part in node.values
+            if isinstance(part, ast.Constant) and isinstance(part.value, str)
+        )
+    return None
+
+
+def _walk_strings(tree):
+    """Yield string nodes without descending into f-strings twice.
+
+    `ast.walk` would also visit each `Constant` fragment inside a `JoinedStr`,
+    and a fragment like "FROM case_variant " on its own would look like a
+    violation even when the WHERE clause sits in the next fragment.
+    """
+    stack = [tree]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, ast.JoinedStr):
+            yield node
+            continue  # handled whole; do not recurse into its parts
+        if isinstance(node, ast.Constant):
+            yield node
+            continue
+        stack.extend(ast.iter_child_nodes(node))
+
+
 def sql_literals_touching_tenant_tables():
-    """Every string constant in src/ that names a tenant-owned table."""
+    """Every string literal in src/ that names a tenant-owned table.
+
+    Residual limit, stated rather than hidden: SQL assembled by concatenating
+    two separate literals, where one holds the table name and the other the
+    predicate, is not caught. Keep statements in one literal.
+    """
     found = []
     for path in sorted(SRC.rglob("*.py")):
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Constant) and isinstance(node.value, str):
-                text = node.value
-                if any(table in text for table in TENANT_OWNED):
-                    found.append((path.relative_to(SRC), node.lineno, text))
+        for node in _walk_strings(tree):
+            text = _literal_text(node)
+            if text and any(table in text for table in TENANT_OWNED):
+                found.append((path.relative_to(SRC), node.lineno, text))
     return found
 
 
@@ -63,12 +106,44 @@ def test_every_query_over_tenant_data_names_tenant_id():
     )
 
 
-def test_the_check_would_catch_a_regression():
-    """Prove the rule has teeth, using the shape of the defect that occurred."""
-    bad = "SELECT case_ref FROM case_variant JOIN assertion_span USING (allele_id)"
-    good = "SELECT case_ref FROM case_variant WHERE tenant_id = ?"
-    assert "tenant_id" not in bad
-    assert "tenant_id" in good
+def scan_source(source: str):
+    """Run the same rule over a source string, for testing the scanner itself."""
+    tree = ast.parse(source)
+    return [
+        text for node in _walk_strings(tree)
+        if (text := _literal_text(node))
+        and any(table in text for table in TENANT_OWNED)
+        and "tenant_id" not in text
+    ]
+
+
+def test_the_check_catches_a_plain_unscoped_query():
+    """The exact shape of the defect that occurred."""
+    assert scan_source(
+        'q = "SELECT case_ref FROM case_variant JOIN assertion_span USING (allele_id)"'
+    )
+
+
+def test_the_check_catches_an_f_string_query():
+    """The bypass an earlier version of this scanner had."""
+    assert scan_source('q = f"SELECT case_ref FROM case_variant WHERE gene = {g}"')
+
+
+def test_a_scoped_f_string_passes():
+    assert not scan_source(
+        'q = f"SELECT case_ref FROM case_variant WHERE tenant_id = {t} AND gene = {g}"'
+    )
+
+
+def test_an_f_string_is_judged_whole_not_fragment_by_fragment():
+    """Fragments either side of an interpolation must be read as one statement."""
+    assert not scan_source(
+        'q = f"SELECT * FROM case_variant WHERE gene={g} AND tenant_id = ?"'
+    )
+
+
+def test_a_scoped_plain_query_passes():
+    assert not scan_source('q = "SELECT case_ref FROM case_variant WHERE tenant_id = ?"')
 
 
 # --------------------------------------------------------------------------

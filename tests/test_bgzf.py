@@ -1,7 +1,6 @@
 """BGZF reading, including the truncated tail that every range fetch produces."""
 
 import gzip
-import zlib
 
 from mendelea.evidence.bgzf import decompress, iter_complete_lines, split_virtual_offset
 

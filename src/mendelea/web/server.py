@@ -23,7 +23,7 @@ from urllib.parse import parse_qs, urlparse
 
 import duckdb
 
-from .. import tenancy
+from .. import config, tenancy
 from ..cases import report as case_report
 from . import queries
 
@@ -36,9 +36,6 @@ SAFE_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 SAFE_ID = re.compile(r"^[A-Za-z0-9_:.\-]{1,120}$")
 
 
-PANEL_DIR = Path(__file__).resolve().parents[3] / "panels"
-
-
 def _panel_genes(panel: str | None) -> set[str] | None:
     """The panel's declared gene list, used to hide flanking neighbours.
 
@@ -47,7 +44,7 @@ def _panel_genes(panel: str | None) -> set[str] | None:
     """
     if not panel:
         return None
-    path = PANEL_DIR / f"{panel}.json"
+    path = config.panel_dir() / f"{panel}.json"
     if not path.exists():
         return None
     try:

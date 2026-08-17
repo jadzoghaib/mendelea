@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-ACTIONABLE_BUCKETS = ("PATHOGENIC", "LIKELY_PATHOGENIC", "BENIGN", "LIKELY_BENIGN")
+from ..evidence.clinvar import ACTIONABLE as ACTIONABLE_BUCKETS  # noqa: E402
 
 
 @dataclass
