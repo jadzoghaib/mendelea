@@ -5,76 +5,195 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Mendelea — evidence time machine</title>
 <style>
+  /* Surfaces and ink. One deliberate dark theme: this is an operational
+     surface, not a landing page. */
   :root{
-    --bg:#0e1116; --panel:#151a21; --panel-2:#1b2129; --line:#262d38;
+    --bg:#0e1116; --panel:#151a21; --panel-2:#1b2129; --line:#262d38; --line-soft:#1c222b;
     --ink:#e6edf3; --ink-dim:#8b98a8; --ink-faint:#5c6874;
-    --accent:#4c9aff;
-    --path:#f2555a; --lpath:#f08a4b; --vus:#c9a227;
-    --lben:#3fb6a8; --ben:#3fa45b; --confl:#a071d8; --other:#5c6874;
+    /* Classification colours form a diverging scale: a pathogenic arm and a
+       benign arm, two lightness steps each, with UNCERTAIN as the neutral
+       midpoint. Validated on the panel surface for deutan/protan/tritan
+       separation; conflicting sits outside the scale, and OTHER is textured
+       rather than coloured -- a second grey cannot be told from the first
+       (validated: normal-vision dE 5-7 against any step of it), and a
+       seventh hue would compete with the scale it is not part of. */
+    --path:#d94c4c; --lpath:#e88b8b; --vus:#7a8592; --lben:#7fd6c2; --ben:#1fa98a;
+    --confl:#9085e9; --other:#8b98a8;
+    /* Status: a relabelling flag is a warning, never a series colour. */
+    --warn:#fab219;
     --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
   }
   *{box-sizing:border-box}
-  body{margin:0;background:var(--bg);color:var(--ink);
-       font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
-  header{display:flex;align-items:baseline;gap:16px;padding:14px 22px;
+  html{color-scheme:dark}
+  body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.5 var(--sans)}
+  a{color:inherit}
+  button,select,input{font:inherit;color:inherit}
+  button{background:var(--panel-2);border:1px solid var(--line);border-radius:4px;
+         padding:4px 10px;cursor:pointer;line-height:1.3}
+  button:hover{border-color:var(--ink-faint)}
+  button:disabled{opacity:.4;cursor:default}
+  button:focus-visible,select:focus-visible,input:focus-visible,[tabindex]:focus-visible{
+    outline:2px solid var(--ink);outline-offset:2px}
+  select{background:var(--panel-2);border:1px solid var(--line);border-radius:4px;
+         padding:6px 10px;font-family:var(--mono);font-size:13px}
+  input[type=search]{background:var(--panel-2);border:1px solid var(--line);border-radius:4px;
+         padding:5px 10px;font-family:var(--mono);font-size:12.5px;width:250px}
+  input[type=search]::placeholder{color:var(--ink-faint)}
+
+  header{display:flex;align-items:baseline;gap:16px;padding:12px 22px;
          border-bottom:1px solid var(--line);background:var(--panel)}
   .brand{font-weight:600;letter-spacing:.14em;font-size:13px}
   .sub{color:var(--ink-faint);font-size:12px;font-family:var(--mono)}
   .ruo{margin-left:auto;font-size:11px;color:var(--ink-faint);
-       border:1px solid var(--line);padding:3px 8px;border-radius:3px}
-  main{max-width:1180px;margin:0 auto;padding:22px}
+       border:1px solid var(--line);padding:3px 8px;border-radius:3px;white-space:nowrap}
+  main{max-width:1280px;margin:0 auto;padding:18px 22px 40px}
 
-  .stage{background:var(--panel);border:1px solid var(--line);
-         border-radius:6px;padding:20px 22px;margin-bottom:18px}
-  .controls{display:flex;gap:14px;align-items:center;flex-wrap:wrap;margin-bottom:18px}
-  select{background:var(--panel-2);color:var(--ink);border:1px solid var(--line);
-         border-radius:4px;padding:7px 10px;font-family:var(--mono);font-size:13px}
-  .date{font-family:var(--mono);font-size:26px;font-weight:600;letter-spacing:.02em;
-        min-width:150px}
-  input[type=range]{flex:1;min-width:260px;accent-color:var(--accent)}
-  .ticks{display:flex;justify-content:space-between;font-family:var(--mono);
-         font-size:10px;color:var(--ink-faint);margin-top:-6px}
+  /* ---- stage: controls, chart, headline ---------------------------------- */
+  .stage{background:var(--panel);border:1px solid var(--line);border-radius:6px;
+         padding:16px 20px 14px;margin-bottom:16px;transition:opacity .15s}
+  .loading .stage,.loading .tablecard{opacity:.6}
+  .controls{display:flex;gap:18px;align-items:center;flex-wrap:wrap;margin-bottom:8px}
+  .field{display:flex;align-items:center;gap:8px;color:var(--ink-dim);font-size:12px}
+  .scrub{display:flex;align-items:center;gap:6px}
+  .scrub button{padding:2px 9px;font-size:15px;line-height:1.2}
+  .date{font-family:var(--mono);font-size:24px;font-weight:600;letter-spacing:.02em;
+        min-width:148px;text-align:center}
+  .hint{color:var(--ink-faint);font-size:12px}
 
-  .headline{font-size:17px;line-height:1.65}
-  .headline b{font-family:var(--mono);font-size:22px}
-  .big{color:var(--accent)}
-  .caption{margin-top:10px;color:var(--ink-dim);font-size:13px;font-style:italic}
+  .chart{position:relative;margin:2px 0 6px;border-radius:4px;cursor:ew-resize;user-select:none}
+  .chart svg{display:block;width:100%;height:210px;overflow:visible}
+  .chart text{font-family:var(--mono);font-size:10.5px;fill:var(--ink-faint)}
+  .chart .grid{stroke:var(--line-soft);stroke-width:1}
+  .chart .axis{stroke:var(--line);stroke-width:1}
+  .chart .col{opacity:.82;transition:opacity .12s}
+  .chart .col.sel,.chart .col.hover{opacity:1}
+  .chart .cursor{stroke:var(--ink);stroke-width:1;opacity:.55}
+  .chart .marker{fill:var(--ink)}
+  .chart text.sel{fill:var(--ink);font-weight:600}
+  .chart .sweep{fill:var(--warn);opacity:.07}
+  .chart .event circle{fill:var(--panel);stroke:var(--warn);stroke-width:1.5}
+  .chart .event text{fill:var(--warn);font-weight:700;font-size:11px}
+  .tip{position:absolute;pointer-events:none;background:var(--panel-2);border:1px solid var(--line);
+       border-radius:5px;padding:8px 10px;font-family:var(--mono);font-size:11.5px;min-width:190px;
+       box-shadow:0 6px 24px rgba(0,0,0,.45);z-index:3}
+  .tip .th{color:var(--ink-dim);margin-bottom:5px;display:flex;justify-content:space-between;gap:12px}
+  .tip .tr{display:grid;grid-template-columns:10px 52px 1fr 40px;gap:8px;align-items:center;padding:1px 0}
+  .tip .tr i{display:block;width:10px;height:3px;border-radius:2px}
+  .tip .tr b{text-align:right;font-variant-numeric:tabular-nums}
+  .tip .tr span{color:var(--ink-dim)}
+  .tip .tr em{font-style:normal;color:var(--ink-faint);text-align:right;font-variant-numeric:tabular-nums}
+  .tip .tr.hl b,.tip .tr.hl span{color:var(--ink)}
 
+  .legend{display:flex;flex-wrap:wrap;gap:4px 18px;font-size:12px;color:var(--ink-dim);
+          margin:2px 0 14px;font-family:var(--mono)}
+  .legend span{display:inline-flex;align-items:center;gap:6px}
+  .legend i{width:10px;height:10px;border-radius:2px;display:inline-block}
+  /* OTHER's swatch, wherever it appears: the hatch the chart paints it with. */
+  i.tex{background:repeating-linear-gradient(45deg,var(--other) 0 1.5px,transparent 1.5px 4px);
+        box-shadow:inset 0 0 0 1px var(--other)}
+  .legend b{color:var(--ink);font-weight:500;font-variant-numeric:tabular-nums}
+
+  .hero{display:flex;gap:22px;align-items:flex-start}
+  .hero .big{font-size:52px;font-weight:600;line-height:1;letter-spacing:-.02em;min-width:150px;
+             padding-top:2px}
+  .hero .big small{display:block;font-size:11px;font-weight:500;letter-spacing:.06em;
+                   color:var(--ink-faint);text-transform:uppercase;margin-top:6px}
+  .headline{font-size:16.5px;line-height:1.7;max-width:820px}
+  .headline b{font-family:var(--mono);font-size:18px}
+  .caption{margin-top:6px;color:var(--ink-dim);font-size:13px;font-style:italic;max-width:820px}
+  .note{margin-top:12px;padding:9px 12px;border:1px solid var(--line);border-left:3px solid var(--warn);
+        border-radius:4px;font-size:12.5px;color:var(--ink-dim);max-width:920px}
+  .note b{color:var(--ink);font-weight:600}
+  .err{margin:0 0 14px;padding:9px 12px;border:1px solid var(--path);border-radius:4px;
+       color:var(--lpath);font-family:var(--mono);font-size:12.5px}
+
+  /* ---- work area: table + detail pane ----------------------------------- */
+  .work{display:grid;grid-template-columns:minmax(0,1fr);gap:16px;align-items:start}
+  .work.paned{grid-template-columns:minmax(0,1fr) 400px}
+  @media (max-width:980px){.work.paned{grid-template-columns:minmax(0,1fr)}}
+  .tablecard{background:var(--panel);border:1px solid var(--line);border-radius:6px;min-width:0;
+             transition:opacity .15s;container-type:inline-size}
+  /* The table sheds columns by the width it actually has, not by whether the
+     pane is open: on a wide screen both fit. Order of expendability is set by
+     what the detail pane already carries -- it shows the condition in full,
+     names the change in its title, and links the ClinVar record. Thresholds
+     are the width the remaining columns measured as needing, not round
+     numbers: all eight want ~860px, seven ~710, six ~620. */
+  @container (max-width:880px){ .c-cond{display:none} }
+  @container (max-width:720px){ .c-chg{display:none} }
+  @container (max-width:630px){ .c-var{display:none} }
+  .toolbar{display:flex;justify-content:space-between;align-items:center;gap:14px;flex-wrap:wrap;
+           padding:10px 14px;border-bottom:1px solid var(--line)}
+  .counts{font-family:var(--mono);font-size:12px;color:var(--ink-dim)}
+  .counts b{color:var(--ink);font-weight:500;font-variant-numeric:tabular-nums}
+  .tools{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+  .seg{display:inline-flex;border:1px solid var(--line);border-radius:4px;overflow:hidden}
+  .seg button{border:0;border-radius:0;background:transparent;padding:4px 11px;font-size:12.5px;
+              color:var(--ink-dim)}
+  .seg button+button{border-left:1px solid var(--line)}
+  .seg button.on{background:var(--panel-2);color:var(--ink)}
+  .pager{display:inline-flex;align-items:center;gap:6px;font-family:var(--mono);font-size:12px;
+         color:var(--ink-dim)}
+  .pager span{font-variant-numeric:tabular-nums;min-width:120px;text-align:right}
+  .pager button{padding:2px 8px}
+
+  .wrap{overflow:auto;max-height:62vh}
   table{width:100%;border-collapse:collapse;font-family:var(--mono);font-size:12.5px}
-  th{text-align:left;color:var(--ink-faint);font-weight:500;padding:7px 9px;
+  th{text-align:left;color:var(--ink-faint);font-weight:500;padding:7px 10px;
      border-bottom:1px solid var(--line);position:sticky;top:0;background:var(--panel);
-     font-size:11px;letter-spacing:.06em;text-transform:uppercase}
-  td{padding:6px 9px;border-bottom:1px solid #1c222b}
+     font-size:11px;letter-spacing:.06em;text-transform:uppercase;white-space:nowrap;z-index:1}
+  td{padding:5px 10px;border-bottom:1px solid var(--line-soft);white-space:nowrap;
+     font-variant-numeric:tabular-nums}
+  td.cond{max-width:260px;overflow:hidden;text-overflow:ellipsis;color:var(--ink-dim);
+          font-family:var(--sans);font-size:12.5px}
+  .paned td.cond{max-width:150px}
   tbody tr{cursor:pointer}
   tbody tr:hover{background:var(--panel-2)}
-  tr.moved td:first-child{box-shadow:inset 3px 0 0 var(--accent)}
-  .wrap{background:var(--panel);border:1px solid var(--line);border-radius:6px;
-        overflow:auto;max-height:60vh}
+  tbody tr.sel{background:var(--panel-2);box-shadow:inset 3px 0 0 var(--ink)}
+  tr.moved td:first-child{box-shadow:inset 3px 0 0 var(--ink-dim)}
+  tr.moved.sel td:first-child{box-shadow:none}
+  td a{color:var(--ink);text-decoration:none;border-bottom:1px solid var(--ink-faint)}
+  td a:hover{border-color:var(--ink)}
+  .dim{color:var(--ink-faint)}
+  .arrow{color:var(--ink-faint);padding:0 4px}
+  .empty{padding:34px;text-align:center;color:var(--ink-faint)}
 
   .chip{display:inline-block;padding:1px 7px;border-radius:3px;font-size:11px;
-        font-weight:600;letter-spacing:.03em}
-  .PATHOGENIC{background:rgba(242,85,90,.16);color:var(--path)}
-  .LIKELY_PATHOGENIC{background:rgba(240,138,75,.16);color:var(--lpath)}
-  .UNCERTAIN{background:rgba(201,162,39,.16);color:var(--vus)}
-  .LIKELY_BENIGN{background:rgba(63,182,168,.16);color:var(--lben)}
-  .BENIGN{background:rgba(63,164,91,.16);color:var(--ben)}
-  .CONFLICTING{background:rgba(160,113,216,.16);color:var(--confl)}
-  .OTHER,.ABSENT{background:rgba(92,104,116,.16);color:var(--other)}
-  .arrow{color:var(--ink-faint);padding:0 5px}
-  .stars{color:var(--vus);letter-spacing:-1px}
+        font-weight:600;letter-spacing:.03em;white-space:nowrap}
+  .PATHOGENIC{background:rgba(217,76,76,.18);color:var(--path)}
+  .LIKELY_PATHOGENIC{background:rgba(232,139,139,.16);color:var(--lpath)}
+  .UNCERTAIN{background:rgba(122,133,146,.2);color:#aab4c0}
+  .LIKELY_BENIGN{background:rgba(127,214,194,.14);color:var(--lben)}
+  .BENIGN{background:rgba(31,169,138,.18);color:var(--ben)}
+  .CONFLICTING{background:rgba(144,133,233,.16);color:var(--confl)}
+  .OTHER{color:var(--other);box-shadow:inset 0 0 0 1px rgba(139,152,168,.5);
+         background:repeating-linear-gradient(45deg,rgba(139,152,168,.28) 0 2px,transparent 2px 5px)}
+  .ABSENT{background:transparent;color:var(--ink-faint);border:1px dashed var(--ink-faint)}
+  .stars{color:var(--ink-dim);letter-spacing:-1px;margin-left:5px}
+  .flag{display:inline-block;margin-left:6px;color:var(--warn);font-size:11px;font-weight:600;
+        border:1px solid rgba(250,178,25,.45);border-radius:3px;padding:0 5px;letter-spacing:.03em}
 
-  dialog{background:var(--panel);color:var(--ink);border:1px solid var(--line);
-         border-radius:8px;padding:0;max-width:640px;width:92%}
-  dialog::backdrop{background:rgba(0,0,0,.62)}
-  .dh{padding:15px 20px;border-bottom:1px solid var(--line);
-      display:flex;justify-content:space-between;align-items:center}
-  .db{padding:16px 20px}
-  .step{display:flex;gap:14px;padding:9px 0;border-bottom:1px solid #1c222b;
-        font-family:var(--mono);font-size:12.5px}
-  .step .when{color:var(--ink-faint);min-width:190px}
-  button{background:var(--panel-2);color:var(--ink);border:1px solid var(--line);
-         border-radius:4px;padding:5px 11px;cursor:pointer;font-size:13px}
-  .empty{padding:34px;text-align:center;color:var(--ink-faint)}
+  /* ---- detail pane ------------------------------------------------------- */
+  .pane{background:var(--panel);border:1px solid var(--line);border-radius:6px;position:sticky;top:16px;
+        min-width:0}
+  .ph{padding:12px 16px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;
+      align-items:flex-start;gap:10px}
+  .ph h2{margin:0;font-size:13px;font-family:var(--mono);font-weight:600;line-height:1.5;word-break:break-all}
+  .ph .meta{color:var(--ink-dim);font-size:12px;margin-top:4px;font-family:var(--sans)}
+  .ph .meta a{color:var(--ink)}
+  .pb{padding:14px 16px 16px}
+  .track{display:block;width:100%;height:70px;overflow:visible;margin-bottom:8px}
+  .track text{font-family:var(--mono);font-size:10px;fill:var(--ink-faint)}
+  .track .tick{stroke:var(--line);stroke-width:1}
+  .track .now{stroke:var(--ink);stroke-width:1;opacity:.55}
+  .track rect.absent{fill:none;stroke:var(--ink-faint);stroke-width:1;stroke-dasharray:3 3}
+  .track text.in{fill:#0e1116;font-weight:600}
+  .step{display:grid;grid-template-columns:172px 1fr;gap:12px;padding:8px 0;
+        border-bottom:1px solid var(--line-soft);font-family:var(--mono);font-size:12px;align-items:center}
+  .step .when{color:var(--ink-faint);font-variant-numeric:tabular-nums}
+  .step .raw{color:var(--ink-faint);font-size:11px;margin-top:2px;font-family:var(--sans)}
+  .foot{color:var(--ink-faint);font-size:12px;margin-top:12px;line-height:1.5}
 </style>
 </head>
 <body>
@@ -85,112 +204,543 @@
 </header>
 
 <main>
-  <div class="stage">
-    <div class="controls">
-      <select id="gene"></select>
-      <span class="date" id="date">—</span>
-      <input type="range" id="slider" min="0" max="0" value="0" step="1">
-    </div>
-    <div class="ticks"><span id="tick0"></span><span id="tick1"></span></div>
-    <div class="headline" id="headline"></div>
-    <div class="caption" id="caption"></div>
-  </div>
+  <div class="err" id="err" hidden></div>
 
-  <div class="wrap">
-    <table>
-      <thead><tr>
-        <th>position</th><th>change</th><th>variation</th>
-        <th>as of date</th><th></th><th>today</th><th>rev</th>
-      </tr></thead>
-      <tbody id="rows"></tbody>
-    </table>
-    <div class="empty" id="empty" hidden>no variants for this gene on this date</div>
-  </div>
+  <section class="stage">
+    <div class="controls">
+      <label class="field">gene <select id="gene" aria-label="gene"></select></label>
+      <div class="scrub">
+        <button id="prev" title="earlier release (←)" aria-label="earlier release">‹</button>
+        <span class="date" id="date">—</span>
+        <button id="next" title="later release (→)" aria-label="later release">›</button>
+      </div>
+      <span class="hint">as ClinVar stood on this release · drag across the chart or use ← →</span>
+    </div>
+
+    <div class="chart" id="chart" tabindex="0" role="slider" aria-label="ClinVar release"
+         aria-valuemin="0" aria-valuemax="0" aria-valuenow="0">
+      <svg id="svg" aria-hidden="true"></svg>
+      <div class="tip" id="tip" hidden></div>
+    </div>
+    <div class="legend" id="legend" aria-label="classification counts on this release"></div>
+
+    <div class="hero">
+      <div class="big" id="big">—<small>now actionable</small></div>
+      <div>
+        <div class="headline" id="headline"></div>
+        <div class="caption" id="caption"></div>
+      </div>
+    </div>
+    <div class="note" id="policy" hidden></div>
+  </section>
+
+  <section class="work" id="work">
+    <div class="tablecard">
+      <div class="toolbar">
+        <div class="counts" id="counts"></div>
+        <div class="tools">
+          <div class="seg" role="group" aria-label="rows">
+            <button class="on" data-mode="all">all</button>
+            <button data-mode="moved">moved only</button>
+          </div>
+          <input id="q" type="search" placeholder="variation ID, position or condition" aria-label="search">
+          <div class="pager">
+            <span id="range"></span>
+            <button id="pprev" aria-label="previous page">‹</button>
+            <button id="pnext" aria-label="next page">›</button>
+          </div>
+        </div>
+      </div>
+      <div class="wrap">
+        <table>
+          <thead><tr>
+            <th>position</th><th class="c-chg">change</th><th class="c-var">variation</th>
+            <th class="c-cond">condition</th>
+            <th id="thAsOf">as of date</th><th></th><th>today</th><th>since</th>
+          </tr></thead>
+          <tbody id="rows"></tbody>
+        </table>
+        <div class="empty" id="empty" hidden></div>
+      </div>
+    </div>
+
+    <aside class="pane" id="pane" hidden aria-label="variant history">
+      <div class="ph">
+        <div>
+          <h2 id="paneTitle"></h2>
+          <div class="meta" id="paneMeta"></div>
+        </div>
+        <button id="paneClose" aria-label="close">close</button>
+      </div>
+      <div class="pb">
+        <svg class="track" id="track" aria-hidden="true"></svg>
+        <div id="steps"></div>
+        <p class="foot">Each row is an observed span between ingested ClinVar releases.
+          Boundaries are release dates, not the dates a submitter acted.</p>
+      </div>
+    </aside>
+  </section>
 </main>
 
-<dialog id="dlg">
-  <div class="dh"><b id="dlgTitle"></b><button onclick="dlg.close()">close</button></div>
-  <div class="db" id="dlgBody"></div>
-</dialog>
-
 <script>
+'use strict';
 const $ = id => document.getElementById(id);
-let RELEASES = [];
+const SVG_NS = 'http://www.w3.org/2000/svg';
+const ORDER = ['PATHOGENIC','LIKELY_PATHOGENIC','UNCERTAIN','LIKELY_BENIGN','BENIGN','CONFLICTING','OTHER'];
+const COLOR = {PATHOGENIC:'var(--path)', LIKELY_PATHOGENIC:'var(--lpath)', UNCERTAIN:'var(--vus)',
+               LIKELY_BENIGN:'var(--lben)', BENIGN:'var(--ben)', CONFLICTING:'var(--confl)',
+               OTHER:'var(--other)', ABSENT:'transparent'};
+// OTHER is painted as a 45° hatch, not a hue: see the palette note in the stylesheet.
+const FILL = b => b === 'OTHER' ? 'url(#hatch)' : COLOR[b];
+const LABEL = b => b.replace(/_/g,' ').toLowerCase();
+const PAGE = 300;
+// What the server accepts in `q`. Filtering here keeps a stray character from
+// turning a search box into an error banner.
+const QUERY_OK = /[^A-Za-z0-9 ,_:./()'-]/g;
 
-const chip = b => `<span class="chip ${b}">${b.replace(/_/g,' ').toLowerCase()}</span>`;
-const stars = n => n > 0 ? '★'.repeat(n) : '·';
-const fmt = n => n.toLocaleString();
+let CONTEXT = null, RELEASES = [], EVENTS = [], COMPOSITION = {};
+const S = {gene:null, idx:0, moved:false, q:'', offset:0, allele:null};
+let seq = 0;          // request sequence: a slow early response must never overwrite a later one
+let hoverIdx = -1;
+let ROWS = [];        // the page on screen, so a variant link can be reopened from it
+let TRACK = null;     // the open variant's spans, for a redraw on resize
+let TOTAL = 0;        // rows matching the current filters, for paging
 
+// ---- helpers ------------------------------------------------------------------
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const fmt = n => Number(n ?? 0).toLocaleString('en-US');
+const pct = (a, b) => b ? (100 * a / b).toFixed(a && 100 * a / b < 10 ? 1 : 0) + '%' : '0%';
+const chip = b => `<span class="chip ${esc(b)}">${esc(LABEL(b))}</span>`;
+const stars = n => n > 0 ? `<span class="stars" title="ClinVar review status, ${n} star${n > 1 ? 's' : ''}">${'★'.repeat(n)}</span>` : '';
+const day = s => Date.UTC(+s.slice(0,4), +s.slice(5,7) - 1, +s.slice(8,10)) / 864e5;
+const el = (name, attrs = {}, text) => {
+  const node = document.createElementNS(SVG_NS, name);
+  for (const [k, v] of Object.entries(attrs)) node.setAttribute(k, v);
+  if (text != null) node.textContent = text;
+  return node;
+};
+function showError(message){ $('err').textContent = message; $('err').hidden = !message; }
+
+// x scale shared by the chart and the variant track: proportional to time,
+// so a year of silence looks like a year and a bimonthly cluster looks dense.
+function xScale(width, left, right){
+  const t0 = day(RELEASES[0]), t1 = day(RELEASES[RELEASES.length - 1]);
+  const span = Math.max(1, t1 - t0);
+  return d => left + (day(d) - t0) / span * (width - left - right);
+}
+// Chart geometry in one place: the pointer-to-release lookup and the drawing
+// must agree exactly, and PAD keeps the first and last columns off the axes
+// instead of straddling them.
+const CHART = {ML: 44, MR: 14, MT: 16, MB: 24, H: 210, PAD: 15};
+const chartX = width => xScale(width, CHART.ML + CHART.PAD, CHART.MR + CHART.PAD);
+
+function niceStep(rough){
+  const p = Math.pow(10, Math.floor(Math.log10(rough)));
+  for (const m of [1, 2, 2.5, 3, 4, 5, 6, 8, 10]) if (m * p >= rough) return m * p;
+  return 10 * p;
+}
+function topRounded(x, y, w, h, r){
+  r = Math.min(r, w / 2, h);
+  return `M${x},${y + h} V${y + r} Q${x},${y} ${x + r},${y} H${x + w - r} Q${x + w},${y} ${x + w},${y + r} V${y + h} Z`;
+}
+
+// ---- URL state: a view is a link -------------------------------------------------
+function readHash(){
+  const p = new URLSearchParams(location.hash.slice(1));
+  if (p.get('gene')) S.gene = p.get('gene').toUpperCase();
+  const on = p.get('on'), i = RELEASES.indexOf(on);
+  if (i >= 0) S.idx = i;
+  S.moved = p.get('moved') === '1';
+  S.q = p.get('q') || '';
+  S.allele = p.get('v') || null;
+}
+function writeHash(){
+  const p = new URLSearchParams();
+  p.set('gene', S.gene); p.set('on', RELEASES[S.idx]);
+  if (S.moved) p.set('moved', '1');
+  if (S.q) p.set('q', S.q);
+  if (S.allele) p.set('v', S.allele);
+  history.replaceState(null, '', '#' + p.toString());
+}
+
+// ---- boot ------------------------------------------------------------------------
 async function boot(){
-  const c = await (await fetch('/api/context')).json();
-  RELEASES = c.releases;
-  $('ctx').textContent =
-    `panel ${c.panel.panel} · ${fmt(c.panel.alleles)} variants · ${c.panel.genes} genes · ${RELEASES.length} releases`;
+  const r = await fetch('/api/context');
+  CONTEXT = await r.json();
+  if (CONTEXT.error) return showError(CONTEXT.error);
+  RELEASES = CONTEXT.releases; EVENTS = CONTEXT.policy_events || [];
+  if (!RELEASES.length || !CONTEXT.genes.length) return showError('the warehouse holds no timeline; run ingest and spans first');
 
-  $('gene').innerHTML = c.genes
-    .map(g => `<option value="${g.gene}">${g.gene} — ${fmt(g.alleles)} variants, ${g.moved_pct}% moved</option>`)
+  $('ctx').textContent = `${CONTEXT.panel.panel} · ${fmt(CONTEXT.panel.alleles)} variants · ${CONTEXT.genes.length} genes · ${RELEASES.length} releases, ${RELEASES[0]} → ${RELEASES[RELEASES.length - 1]}`;
+  $('gene').innerHTML = CONTEXT.genes
+    .map(g => `<option value="${esc(g.gene)}">${esc(g.gene)} — ${fmt(g.alleles)} variants, ${g.moved_pct}% ever moved</option>`)
     .join('');
 
-  const s = $('slider');
-  s.max = RELEASES.length - 1;
-  s.value = 0;                       // open at the earliest release: the past is the point
-  $('tick0').textContent = RELEASES[0];
-  $('tick1').textContent = RELEASES[RELEASES.length - 1];
+  S.gene = CONTEXT.genes[0].gene;
+  S.idx = 0;                        // open at the earliest release: the past is the point
+  readHash();
+  if (!CONTEXT.genes.some(g => g.gene === S.gene)) S.gene = CONTEXT.genes[0].gene;
+  $('gene').value = S.gene;
+  $('q').value = S.q;
+  setMode(S.moved, false);
 
-  s.addEventListener('input', render);
-  $('gene').addEventListener('change', render);
-  render();
+  const chart = $('chart');
+  chart.setAttribute('aria-valuemax', RELEASES.length - 1);
+  $('gene').addEventListener('change', () => { S.gene = $('gene').value; S.offset = 0; closePane(); refresh(true); });
+  $('prev').addEventListener('click', () => select(S.idx - 1));
+  $('next').addEventListener('click', () => select(S.idx + 1));
+  chart.addEventListener('keydown', e => {
+    const k = e.key;
+    if (k === 'ArrowLeft' || k === 'ArrowDown') { select(S.idx - 1); e.preventDefault(); }
+    else if (k === 'ArrowRight' || k === 'ArrowUp') { select(S.idx + 1); e.preventDefault(); }
+    else if (k === 'Home') { select(0); e.preventDefault(); }
+    else if (k === 'End') { select(RELEASES.length - 1); e.preventDefault(); }
+  });
+  let dragging = false;
+  chart.addEventListener('pointerdown', e => { dragging = true; chart.setPointerCapture(e.pointerId); select(nearest(e)); });
+  chart.addEventListener('pointermove', e => { if (dragging) select(nearest(e)); hover(nearest(e), e); });
+  chart.addEventListener('pointerup', () => { dragging = false; });
+  chart.addEventListener('pointerleave', () => { dragging = false; hover(-1); });
+  new ResizeObserver(() => drawChart()).observe(chart);
+  new ResizeObserver(() => { if (TRACK) drawTrack(TRACK); }).observe($('pane'));
+
+  document.querySelectorAll('.seg button').forEach(b =>
+    b.addEventListener('click', () => { setMode(b.dataset.mode === 'moved', true); }));
+  let typing;
+  $('q').addEventListener('input', () => {
+    const clean = $('q').value.replace(QUERY_OK, '').slice(0, 60);
+    if (clean !== $('q').value) $('q').value = clean;
+    // The state is committed now and only the request is debounced. Deferring
+    // both meant a filter button pressed mid-typing fired a request carrying
+    // the previous query, and its empty result briefly replaced a good one.
+    S.q = clean.trim();
+    S.offset = 0;
+    clearTimeout(typing);
+    typing = setTimeout(loadRows, 250);
+  });
+  // Clamped against the last known total rather than trusting the buttons'
+  // disabled state, which belongs to whichever render is on screen.
+  $('pprev').addEventListener('click', () => {
+    if (S.offset === 0) return;
+    S.offset = Math.max(0, S.offset - PAGE); loadRows();
+  });
+  $('pnext').addEventListener('click', () => {
+    if (S.offset + PAGE >= TOTAL) return;
+    S.offset += PAGE; loadRows();
+  });
+  // A pasted or edited link should move the view. `writeHash` uses
+  // replaceState, which fires no hashchange, so anything arriving here came
+  // from the reader: a deep link, or the back button.
+  addEventListener('hashchange', async () => {
+    readHash();
+    $('gene').value = S.gene;
+    $('q').value = S.q;
+    setMode(S.moved, false);
+    await refresh(true);
+    if (S.allele) openVariant(ROWS.find(r => r.allele_id === S.allele) || {allele_id: S.allele});
+    else closePane();
+  });
+  $('paneClose').addEventListener('click', closePane);
+  document.addEventListener('keydown', e => { if (e.key === 'Escape' && !$('pane').hidden) closePane(); });
+
+  renderPolicyNote();
+  await refresh(true);
+  if (S.allele) openVariant(ROWS.find(r => r.allele_id === S.allele) || {allele_id: S.allele});
 }
 
-async function render(){
-  const on = RELEASES[$('slider').value];
-  const gene = $('gene').value;
+function setMode(moved, reload){
+  S.moved = moved; S.offset = 0;
+  document.querySelectorAll('.seg button').forEach(b => b.classList.toggle('on', (b.dataset.mode === 'moved') === moved));
+  if (reload) loadRows();
+}
+
+function select(i){
+  i = Math.max(0, Math.min(RELEASES.length - 1, i));
+  if (i === S.idx && $('date').textContent === RELEASES[i]) return;
+  S.idx = i; S.offset = 0;
+  refresh(false);
+}
+
+// One place that re-renders everything downstream of (gene, release).
+async function refresh(geneChanged){
+  const on = RELEASES[S.idx];
   $('date').textContent = on;
+  $('thAsOf').textContent = 'as of ' + on;
+  $('prev').disabled = S.idx === 0;
+  $('next').disabled = S.idx === RELEASES.length - 1;
+  $('chart').setAttribute('aria-valuenow', S.idx);
+  $('chart').setAttribute('aria-valuetext', `${S.gene} on ${on}`);
+  writeHash();
+  if (geneChanged || !COMPOSITION[S.gene]) await loadComposition();
+  drawChart();
+  await loadRows();
+}
 
-  const d = await (await fetch(`/api/variants?gene=${encodeURIComponent(gene)}&on=${on}`)).json();
-  if (d.error){ $('headline').textContent = d.error; return; }
-  const h = d.headline;
+// ---- composition chart: the scrubber --------------------------------------------
+async function loadComposition(){
+  const gene = S.gene;
+  const r = await fetch(`/api/composition?gene=${encodeURIComponent(gene)}`);
+  const d = await r.json();
+  if (d.error) return showError(d.error);
+  COMPOSITION[gene] = d.composition;
+}
 
+function nearest(e){
+  const rect = $('chart').getBoundingClientRect();
+  const x = e.clientX - rect.left;
+  const sx = chartX(rect.width);
+  let best = 0, dist = Infinity;
+  RELEASES.forEach((d, i) => { const dd = Math.abs(sx(d) - x); if (dd < dist) { dist = dd; best = i; } });
+  return best;
+}
+
+function drawChart(){
+  const svg = $('svg'), series = COMPOSITION[S.gene];
+  if (!series) return;
+  const W = svg.clientWidth || 800;
+  const {H, ML, MR, MT, MB} = CHART;
+  const sx = chartX(W);
+  const maxTotal = Math.max(1, ...series.map(s => s.total));
+  const step = niceStep(maxTotal / 4), top = Math.ceil(maxTotal / step) * step;
+  const sy = v => MT + (H - MT - MB) * (1 - v / top);
+
+  svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+  svg.replaceChildren();
+
+  const defs = el('defs');
+  const hatch = el('pattern', {id: 'hatch', width: 5, height: 5,
+                               patternTransform: 'rotate(45)', patternUnits: 'userSpaceOnUse'});
+  hatch.append(el('line', {x1: 0, y1: 0, x2: 0, y2: 5,
+                           stroke: 'var(--other)', 'stroke-width': 2}));
+  defs.append(hatch);
+  svg.append(defs);
+
+  // gridlines and y ticks: recessive hairlines, clean numbers
+  for (let v = 0; v <= top; v += step){
+    svg.append(el('line', {x1: ML, x2: W - MR, y1: sy(v), y2: sy(v), class: v === 0 ? 'axis' : 'grid'}));
+    svg.append(el('text', {x: ML - 6, y: sy(v) + 3.5, 'text-anchor': 'end'}, fmt(v)));
+  }
+
+  // the policy sweep window, shaded before the columns so it sits behind them
+  for (const ev of EVENTS){
+    const a = sx(ev.from_date), b = sx(ev.to_date);
+    if (isFinite(a) && isFinite(b)) svg.append(el('rect', {x: Math.min(a, b), y: MT, width: Math.abs(b - a) || 1, height: H - MT - MB, class: 'sweep'}));
+  }
+
+  // column width from the tightest spacing on the axis, capped at 24px
+  const xs = RELEASES.map(sx);
+  let gap = Infinity;
+  for (let i = 1; i < xs.length; i++) gap = Math.min(gap, xs[i] - xs[i - 1]);
+  const cw = xs.length > 1 ? Math.max(6, Math.min(24, gap * 0.62, 2 * CHART.PAD)) : 24;
+  const labelEvery = gap >= 46 ? 1 : Math.ceil(46 / Math.max(gap, 1));
+
+  series.forEach((s, i) => {
+    const g = el('g', {class: 'col' + (i === S.idx ? ' sel' : '') + (i === hoverIdx ? ' hover' : ''), 'data-i': i});
+    let acc = 0;
+    const segs = ORDER.filter(b => s.counts[b]);
+    segs.forEach((b, k) => {
+      const n = s.counts[b];
+      const y1 = sy(acc + n), y0 = sy(acc);
+      acc += n;
+      const h = y0 - y1 - (k < segs.length - 1 ? 2 : 0);   // 2px surface gap between segments
+      if (h < 0.5) return;                                  // too thin to paint; tooltip and table carry it
+      const x = xs[i] - cw / 2;
+      if (k === segs.length - 1) g.append(el('path', {d: topRounded(x, y1, cw, h, 4), fill: FILL(b)}));
+      else g.append(el('rect', {x, y: y1, width: cw, height: h, fill: FILL(b)}));
+    });
+    svg.append(g);
+    // x labels: every column when there is room, else thinned
+    if (i % labelEvery === 0 || i === S.idx){
+      const t = el('text', {x: xs[i], y: H - 7, 'text-anchor': 'middle', class: i === S.idx ? 'sel' : ''},
+                   gap >= 80 ? RELEASES[i] : RELEASES[i].slice(0, 7));
+      svg.append(t);
+    }
+  });
+
+  // policy event marker above the release the sweep landed on
+  for (const ev of EVENTS){
+    const x = sx(ev.to_date);
+    if (!isFinite(x)) continue;
+    const g = el('g', {class: 'event'});
+    g.append(el('circle', {cx: x, cy: 7, r: 6.5}));
+    g.append(el('text', {x, y: 11, 'text-anchor': 'middle'}, '!'));
+    g.append(el('title', {}, `Policy event: ${ev.from_bucket} → ${ev.to_bucket} swept ${fmt(ev.count)} variants (${(100 * ev.share).toFixed(1)}% of the panel) between ${ev.from_date} and ${ev.to_date}. A rule change at ClinVar, not evidence.`));
+    svg.append(g);
+  }
+
+  // the cursor: where the rest of the page is standing
+  const cx = xs[S.idx];
+  svg.append(el('line', {x1: cx, x2: cx, y1: MT - 4, y2: H - MB, class: 'cursor'}));
+  svg.append(el('path', {d: `M${cx - 5},${H - MB + 7} L${cx + 5},${H - MB + 7} L${cx},${H - MB + 1} Z`, class: 'marker'}));
+
+  renderLegend(series[S.idx]);
+}
+
+function renderLegend(s){
+  if (!s) return;
+  $('legend').innerHTML = ORDER.map(b => b === 'OTHER'
+    ? `<span><i class="tex"></i>${esc(LABEL(b))} <b>${fmt(s.counts[b] || 0)}</b></span>`
+    : `<span><i style="background:${COLOR[b]}"></i>${esc(LABEL(b))} <b>${fmt(s.counts[b] || 0)}</b></span>`).join('');
+}
+
+function hover(i, e){
+  const tip = $('tip');
+  if (i !== hoverIdx){
+    hoverIdx = i;
+    document.querySelectorAll('#svg .col').forEach(g => g.classList.toggle('hover', +g.dataset.i === i));
+  }
+  const series = COMPOSITION[S.gene];
+  if (i < 0 || !series || !e) { tip.hidden = true; return; }
+  const s = series[i];
+  tip.innerHTML = `<div class="th"><span>${esc(s.on)}</span><span>${fmt(s.total)} variants</span></div>` +
+    ORDER.filter(b => s.counts[b]).map(b =>
+      `<div class="tr"><i class="${b === 'OTHER' ? 'tex' : ''}" style="${b === 'OTHER' ? '' : `background:${COLOR[b]}`}"></i><b>${fmt(s.counts[b])}</b><span>${esc(LABEL(b))}</span><em>${pct(s.counts[b], s.total)}</em></div>`).join('');
+  tip.hidden = false;
+  const rect = $('chart').getBoundingClientRect();
+  const x = e.clientX - rect.left, flip = x > rect.width - 240;
+  tip.style.left = (flip ? x - 14 - tip.offsetWidth : x + 14) + 'px';
+  tip.style.top = Math.max(0, Math.min(e.clientY - rect.top - 20, rect.height - tip.offsetHeight)) + 'px';
+}
+
+// ---- headline and table ---------------------------------------------------------
+async function loadRows(){
+  const my = ++seq;
+  const on = RELEASES[S.idx], gene = S.gene;
+  document.body.classList.add('loading');
+  const p = new URLSearchParams({gene, on, limit: PAGE, offset: S.offset});
+  if (S.moved) p.set('moved', '1');
+  if (S.q) p.set('q', S.q);
+  writeHash();
+  let d;
+  try {
+    d = await (await fetch('/api/variants?' + p)).json();
+  } catch (err) {
+    if (my === seq) { document.body.classList.remove('loading'); showError('the server did not answer: ' + err.message); }
+    return;
+  }
+  if (my !== seq) return;                       // superseded while in flight
+  document.body.classList.remove('loading');
+  if (d.error) return showError(d.error);
+  showError('');
+  renderHeadline(d.headline, on, gene);
+  renderRows(d, on);
+}
+
+function renderHeadline(h, on, gene){
+  $('big').innerHTML = `${h.uncertain ? h.actionable_pct + '%' : '—'}<small>now actionable</small>`;
   $('headline').innerHTML =
-    `On <b>${on}</b>, <b>${fmt(h.uncertain)}</b> ${gene} variants were classified ` +
-    `${chip('UNCERTAIN')}.<br>` +
-    `<b class="big">${fmt(h.actionable)}</b> of those — <b class="big">${h.actionable_pct}%</b> — ` +
-    `are today classified ${chip('PATHOGENIC')} or ${chip('BENIGN')}.`;
-
+    `On <b>${esc(on)}</b>, <b>${fmt(h.uncertain)}</b> ${esc(gene)} variants were classified ${chip('UNCERTAIN')}. ` +
+    `<b>${fmt(h.actionable)}</b> of those are today classified ${chip('PATHOGENIC')} or ${chip('BENIGN')} ` +
+    `(<b>${fmt(h.now_pathogenic)}</b> pathogenic or likely, <b>${fmt(h.now_benign)}</b> benign or likely).`;
   $('caption').textContent = h.actionable
     ? 'A report signed out on this date carried a conclusion the evidence no longer supports. Nothing told the laboratory.'
-    : 'Nothing in this gene has moved out of uncertain since this date.';
+    : (h.uncertain ? 'Nothing in this gene has moved out of uncertain since this date.' : 'No uncertain variants in this gene on this date.');
+  const parts = [`<b>${fmt(h.classified)}</b> variants on ${esc(on)}`, `<b>${fmt(h.moved)}</b> moved since`];
+  if (h.policy_suspect) parts.push(`<b>${fmt(h.policy_suspect)}</b> of them match the relabelling event`);
+  if (h.retracted) parts.push(`<b>${fmt(h.retracted)}</b> retracted from ClinVar`);
+  $('counts').innerHTML = parts.join(' · ');
+}
 
-  const rows = d.variants.map(v => `
-    <tr class="${v.moved ? 'moved' : ''}" onclick="showTimeline('${v.allele_id}','${v.gene} ${v.contig}:${v.pos} ${v.ref}>${v.alt}')">
-      <td>${v.contig}:${v.pos}</td>
-      <td>${v.ref}>${v.alt}</td>
-      <td>${v.variation_id}</td>
-      <td>${chip(v.bucket)}</td>
+function renderRows(d, on){
+  const rows = ROWS = d.variants;
+  $('rows').innerHTML = rows.map(v => `
+    <tr data-id="${esc(v.allele_id)}" tabindex="0"
+        class="${v.moved ? 'moved' : ''}${v.allele_id === S.allele ? ' sel' : ''}">
+      <td>${esc(v.contig)}:${esc(v.pos)}</td>
+      <td class="c-chg" title="${esc(v.ref)}>${esc(v.alt)}">${esc(v.ref.length > 8 ? v.ref.slice(0, 7) + '…' : v.ref)}>${esc(v.alt.length > 8 ? v.alt.slice(0, 7) + '…' : v.alt)}</td>
+      <td class="c-var"><a href="https://www.ncbi.nlm.nih.gov/clinvar/variation/${encodeURIComponent(v.variation_id)}/" target="_blank" rel="noopener" title="open in ClinVar">${esc(v.variation_id)}</a></td>
+      <td class="cond c-cond" title="${esc(v.condition || '')}">${esc(v.condition || '')}</td>
+      <td>${chip(v.bucket)}${stars(v.stars)}</td>
       <td class="arrow">${v.moved ? '→' : ''}</td>
-      <td>${v.moved ? chip(v.now_bucket) : '<span style="color:var(--ink-faint)">unchanged</span>'}</td>
-      <td class="stars">${stars(v.now_stars)}</td>
+      <td>${v.moved ? chip(v.now_bucket) + stars(v.now_stars) : '<span class="dim">unchanged</span>'}${v.policy_suspect ? '<span class="flag" title="matches a detected policy event: a ClinVar rule change, not new evidence">! relabelled</span>' : ''}</td>
+      <td class="dim">${v.moved ? esc(v.changed_on) : ''}</td>
     </tr>`).join('');
+  $('rows').querySelectorAll('tr').forEach(tr => {
+    const v = rows.find(r => r.allele_id === tr.dataset.id);
+    tr.addEventListener('click', e => { if (e.target.closest('a')) return; openVariant(v, tr); });
+    tr.addEventListener('keydown', e => { if (e.key === 'Enter') openVariant(v, tr); });
+  });
 
-  $('rows').innerHTML = rows;
-  $('empty').hidden = d.variants.length > 0;
+  TOTAL = d.total;
+  const from = d.total ? d.offset + 1 : 0, to = Math.min(d.total, d.offset + rows.length);
+  $('range').textContent = `${fmt(from)}–${fmt(to)} of ${fmt(d.total)}`;
+  $('pprev').disabled = d.offset === 0;
+  $('pnext').disabled = to >= d.total;
+  $('empty').hidden = rows.length > 0;
+  $('empty').textContent = S.q ? `nothing matches “${S.q}” in this gene on ${on}`
+                         : (S.moved ? `nothing in this gene has moved since ${on}` : `no variants for this gene on ${on}`);
 }
 
-async function showTimeline(alleleId, label){
-  const d = await (await fetch(`/api/timeline?allele_id=${encodeURIComponent(alleleId)}`)).json();
-  $('dlgTitle').textContent = label;
-  $('dlgBody').innerHTML = d.timeline.map(s => `
+// ---- variant pane: one allele's whole history ------------------------------------
+async function openVariant(v, tr){
+  S.allele = v.allele_id; writeHash();
+  document.querySelectorAll('#rows tr').forEach(r => r.classList.toggle('sel', r.dataset.id === v.allele_id));
+  const d = await (await fetch(`/api/timeline?allele_id=${encodeURIComponent(v.allele_id)}`)).json();
+  if (d.error) return showError(d.error);
+  const steps = d.timeline;
+  const label = v.contig ? `${v.gene} ${v.contig}:${v.pos} ${v.ref}>${v.alt}` : v.allele_id;
+  $('paneTitle').textContent = label;
+  $('paneMeta').innerHTML = (v.variation_id
+      ? `ClinVar <a href="https://www.ncbi.nlm.nih.gov/clinvar/variation/${encodeURIComponent(v.variation_id)}/" target="_blank" rel="noopener">variation ${esc(v.variation_id)}</a>` : '')
+    + (v.condition ? ` · ${esc(v.condition)}` : '');
+  $('steps').innerHTML = steps.map(s => `
     <div class="step">
-      <span class="when">${s.from} → ${s.to || 'now'}</span>
-      <span>${chip(s.bucket)} <span class="stars">${stars(s.stars)}</span></span>
-    </div>`).join('')
-    + `<p style="color:var(--ink-faint);font-size:12px;margin-top:14px">
-         Each row is an observed span between ingested ClinVar releases.
-         Boundaries are release dates, not the dates a submitter acted.</p>`;
-  $('dlg').showModal();
+      <span class="when">${esc(s.from)} → ${s.to ? esc(s.to) : 'now'}</span>
+      <span>${chip(s.bucket)}${stars(s.stars)}${s.clnsig ? `<div class="raw">${esc(s.clnsig.replace(/_/g, ' '))}</div>` : ''}</span>
+    </div>`).join('');
+  $('pane').hidden = false;
+  $('work').classList.add('paned');
+  TRACK = steps;
+  drawTrack(steps);
+  if (tr) tr.focus({preventScroll: true});
 }
 
-boot();
+function closePane(){
+  S.allele = null; TRACK = null; writeHash();
+  $('pane').hidden = true;
+  $('work').classList.remove('paned');
+  document.querySelectorAll('#rows tr.sel').forEach(r => r.classList.remove('sel'));
+}
+
+function drawTrack(steps){
+  const svg = $('track');
+  const W = svg.clientWidth || 360, H = 70, ML = 6, MR = 6, Y = 22, BH = 20;
+  const last = RELEASES[RELEASES.length - 1];
+  // The domain runs a tenth past the last release, so the open-ended current
+  // span has width to be seen. Without the tail it begins and ends at the
+  // same x and the state the reader actually cares about is invisible.
+  const t0 = day(RELEASES[0]), span = Math.max(1, day(last) - t0) * 1.1;
+  const sx = d => ML + (day(d) - t0) / span * (W - ML - MR);
+  svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+  svg.replaceChildren();
+  RELEASES.forEach(d => svg.append(el('line', {x1: sx(d), x2: sx(d), y1: Y - 6, y2: Y + BH + 6, class: 'tick'})));
+  for (const s of steps){
+    const a = sx(s.from), b = s.to ? sx(s.to) : W - MR;
+    const w = Math.max(2, b - a);
+    if (s.bucket === 'ABSENT') svg.append(el('rect', {x: a + 1, y: Y + 1, width: Math.max(0, w - 2), height: BH - 2, class: 'absent'}));
+    else svg.append(el('rect', {x: a + 1, y: Y, width: Math.max(0, w - 2), height: BH, rx: 2, fill: COLOR[s.bucket]}));
+    const text = LABEL(s.bucket) + (s.stars > 0 ? ' ' + '★'.repeat(s.stars) : '');
+    if (w > text.length * 6.4 + 10 && s.bucket !== 'ABSENT')
+      svg.append(el('text', {x: a + w / 2, y: Y + BH / 2 + 3.5, 'text-anchor': 'middle', class: 'in'}, text));
+  }
+  const cx = sx(RELEASES[S.idx]);
+  svg.append(el('line', {x1: cx, x2: cx, y1: Y - 10, y2: Y + BH + 10, class: 'now'}));
+  svg.append(el('text', {x: sx(RELEASES[0]), y: Y + BH + 18, 'text-anchor': 'start'}, RELEASES[0]));
+  svg.append(el('text', {x: sx(last), y: Y + BH + 18, 'text-anchor': 'end'}, last + ' · now'));
+  svg.append(el('text', {x: cx, y: Y - 10, 'text-anchor': cx > W - 70 ? 'end' : (cx < 70 ? 'start' : 'middle')}, 'viewing ' + RELEASES[S.idx]));
+}
+
+function renderPolicyNote(){
+  if (!EVENTS.length) return;
+  $('policy').innerHTML = EVENTS.map(ev =>
+    `<b>Policy event detected.</b> Between ${esc(ev.from_date)} and ${esc(ev.to_date)}, <b>${fmt(ev.count)}</b> variants ` +
+    `(${(100 * ev.share).toFixed(1)}% of this panel) moved ${chip(ev.from_bucket)} → ${chip(ev.to_bucket)} in a single step, against 1–3% ` +
+    `for an ordinary release. That is ClinVar changing how it aggregates submissions, not laboratories revising variants. ` +
+    `Rows marked <span class="flag">! relabelled</span> landed there and are not counted as actionable.`).join('<br>');
+  $('policy').hidden = false;
+}
+
+boot().catch(err => showError('the page failed to start: ' + err.message));
 </script>
 </body>
 </html>

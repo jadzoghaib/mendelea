@@ -7,16 +7,18 @@ separate (`queries.py`), so moving to FastAPI later is an adapter, not a
 rewrite.
 
 Read-only throughout: the connection is opened read-only, there are no write
-endpoints, and it serves public ClinVar data only. Nothing here should ever
-touch the case or decision planes -- those need auth and tenant isolation,
-which is Phase 3.
+endpoints, and it serves public ClinVar data only. The one authenticated
+endpoint, `/api/case/report`, is the single place tenant data is reachable,
+and the tenant comes from the token, never from the request.
 """
 
 from __future__ import annotations
 
 import json
+import logging
 import re
 import threading
+from dataclasses import asdict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -25,15 +27,23 @@ import duckdb
 
 from .. import config, tenancy
 from ..cases import report as case_report
+from ..reports import policy
 from . import queries
 
 STATIC = Path(__file__).resolve().parent / "static"
+log = logging.getLogger("mendelea.web")
 
 # Gene symbols reach SQL as a bound parameter, but bound or not we only ever
 # want to see something that looks like a gene symbol.
 SAFE_SYMBOL = re.compile(r"^[A-Za-z0-9_.\-]{1,32}$")
 SAFE_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 SAFE_ID = re.compile(r"^[A-Za-z0-9_:.\-]{1,120}$")
+# A search term: a variation ID, a position, or a fragment of a condition
+# name ("Li-Fraumeni", "breast and/or ovarian").
+SAFE_QUERY = re.compile(r"^[A-Za-z0-9 ,_:./()'\-]{1,60}$")
+SAFE_INT = re.compile(r"^\d{1,7}$")
+
+PAGE_LIMIT = 1000
 
 
 def _panel_genes(panel: str | None) -> set[str] | None:
@@ -70,13 +80,52 @@ def make_handler(warehouse: Path):
             local.c = duckdb.connect(str(warehouse), read_only=True)
         return local.c
 
+    # Computed once per process. The warehouse cannot change underneath a
+    # running server: DuckDB admits one writer or many readers to a file,
+    # never both, so a rebuild waits for the server to stop. Restart is the
+    # invalidation. Policy detection alone takes most of a second and the
+    # gene ranking scans every span; neither belongs on the page-load path.
+    cache: dict = {}
+    cache_lock = threading.Lock()
+
+    def context() -> tuple[dict, list]:
+        with cache_lock:
+            if "context" not in cache:
+                c = conn()
+                panel = queries.loaded_panel(c)
+                events = queries.policy_events(c)
+                cache["events"] = events
+                cache["context"] = {
+                    "panel": panel,
+                    "releases": queries.release_dates(c, panel["panel"]),
+                    "genes": queries.genes(c, _panel_genes(panel["panel"])),
+                    "policy_events": [asdict(e) for e in events],
+                }
+            return cache["context"], cache["events"]
+
     def require(value: str | None, pattern: re.Pattern, name: str) -> str:
         if not value or not pattern.match(value):
             raise ApiError(400, f"invalid or missing {name}")
         return value
 
+    def optional(value: str | None, pattern: re.Pattern, name: str) -> str | None:
+        if value is None or value == "":
+            return None
+        return require(value, pattern, name)
+
+    def integer(value: str | None, name: str, default: int, low: int, high: int) -> int:
+        if value is None or value == "":
+            return default
+        number = int(require(value, SAFE_INT, name))
+        if not low <= number <= high:
+            raise ApiError(400, f"{name} must be between {low} and {high}")
+        return number
+
     class Handler(BaseHTTPRequestHandler):
         server_version = "mendelea"
+        # Persistent connections: the page issues a request per slider step,
+        # and a fresh TCP handshake for each of them was the slowest part.
+        protocol_version = "HTTP/1.1"
 
         def log_message(self, *args):  # noqa: A003 - quiet by default
             pass
@@ -85,6 +134,12 @@ def make_handler(warehouse: Path):
             self.send_response(status)
             self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(body)))
+            # Never cache. Keep-alive plus a Content-Length and no cache
+            # directive is enough for Chrome to reuse a stale page heuristically
+            # -- which it did during development, serving the previous build of
+            # index.html after a restart. A page that must be re-read to be
+            # trusted is not worth the saved kilobytes.
+            self.send_header("Cache-Control", "no-store")
             self.end_headers()
             self.wfile.write(body)
 
@@ -95,8 +150,8 @@ def make_handler(warehouse: Path):
             """Resolve the bearer token to a tenant, or refuse.
 
             The tenant is never read from a query parameter. If it were, a
-            valid token for one laboratory could be pointed at another's
-            data -- authentication without authorisation.
+            valid token for one laboratory could be pointed at another
+            laboratory's data -- authentication without authorisation.
             """
             header = self.headers.get("Authorization", "")
             token = header[7:].strip() if header.lower().startswith("bearer ") else None
@@ -117,19 +172,36 @@ def make_handler(warehouse: Path):
                     )
 
                 if parsed.path == "/api/context":
-                    panel = queries.loaded_panel(conn())
-                    return self._json({
-                        "panel": panel,
-                        "releases": queries.release_dates(conn(), panel["panel"]),
-                        "genes": queries.genes(conn(), _panel_genes(panel["panel"])),
-                    })
+                    return self._json(context()[0])
 
                 if parsed.path == "/api/variants":
                     gene = require(one("gene"), SAFE_SYMBOL, "gene")
                     on = require(one("on"), SAFE_DATE, "on")
+                    q = optional(one("q"), SAFE_QUERY, "q")
+                    only_moved = one("moved") == "1"
+                    limit = integer(one("limit"), "limit", 400, 1, PAGE_LIMIT)
+                    offset = integer(one("offset"), "offset", 0, 0, 9_999_999)
+                    _, events = context()
+                    page = queries.variants_on(
+                        conn(), gene, on, events=events, only_moved=only_moved,
+                        q=q, limit=limit, offset=offset,
+                    )
                     return self._json({
-                        "headline": queries.headline(conn(), gene, on),
-                        "variants": queries.variants_on(conn(), gene, on),
+                        "headline": queries.headline(conn(), gene, on, events),
+                        "variants": page["rows"],
+                        "total": page["total"],
+                        "offset": offset,
+                        "limit": limit,
+                    })
+
+                if parsed.path == "/api/composition":
+                    gene = require(one("gene"), SAFE_SYMBOL, "gene")
+                    ctx, _ = context()
+                    return self._json({
+                        "gene": gene.upper(),
+                        "composition": queries.composition(
+                            conn(), gene, ctx["panel"]["panel"]
+                        ),
                     })
 
                 if parsed.path == "/api/timeline":
@@ -141,7 +213,8 @@ def make_handler(warehouse: Path):
                     # taken from the token and never from the request, so a
                     # caller cannot ask for someone else's report.
                     tenant = self._authenticate()
-                    rep = case_report.build(conn(), tenant)
+                    _, events = context()
+                    rep = case_report.build(conn(), tenant, policy.suspect_keys(events))
                     return self._json({
                         "tenant": rep.tenant_id,
                         "evidence_panel": rep.evidence_panel,
@@ -166,8 +239,12 @@ def make_handler(warehouse: Path):
 
             except ApiError as exc:
                 self._json({"error": exc.message}, exc.status)
-            except Exception as exc:  # noqa: BLE001 - never leak a traceback
-                self._json({"error": f"{type(exc).__name__}: {exc}"}, 500)
+            except Exception:  # noqa: BLE001 - never leak a traceback, nor its message
+                # The message can carry SQL fragments and file paths. It goes
+                # to the server log, where whoever is running the demo can
+                # read it; the client learns only that something broke.
+                log.exception("unhandled error serving %s", self.path)
+                self._json({"error": "internal error"}, 500)
 
     return Handler
 
