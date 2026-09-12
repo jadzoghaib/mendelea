@@ -445,7 +445,13 @@ These are real and should be read before quoting any number this produces.
   barely; a slightly larger corpus or slightly smaller event would have gone
   undetected. Ingest densely around any suspected event before trusting a
   negative result, and treat the threshold as panel-specific rather than
-  universal.
+  universal. Density now bounds the *attribution* too, not just the
+  detection: the suspect key is the event's release date, so at annual
+  density the "event" spans 2022-12-24 → 2023-12-30 and a year of ordinary
+  drift observed at that snapshot is subtracted along with the sweep. The
+  31-gene panel's 26.7% is therefore a floor, and the spike panel's 36.8%,
+  measured against a nine-week window, is the better-resolved figure.
+  Densifying the 31-gene ingest across early 2023 is the fix.
 - **Policy attribution catches sweeps, not gradual policy effects.** Only a
   transition large enough to trip the threshold in one release step is
   flagged. ClinVar's conflict rule changed effective June 2022 and the
