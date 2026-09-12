@@ -115,9 +115,30 @@ def detect(connection, threshold: float = DEFAULT_THRESHOLD) -> list[PolicyEvent
     ]
 
 
-def suspect_pairs(events: list[PolicyEvent]) -> set[tuple[str, str]]:
-    """Bucket transitions implicated by at least one detected policy event."""
-    return {event.pair for event in events}
+def suspect_keys(events: list[PolicyEvent]) -> set[tuple[str, str, str]]:
+    """(from_bucket, to_bucket, to_date) for every detected event.
+
+    A movement is policy-suspect when it matches an event's transition *and*
+    the variant's current state began at that event's release step. Matching
+    the pair alone -- which an earlier version did -- flags every
+    UNCERTAIN -> CONFLICTING transition ever recorded, including the ordinary
+    handful arising at every release from submitters who genuinely disagree.
+    Those are evidence; only the sweep is a relabelling. On the 31-gene panel
+    the pair-only rule subtracted 10,027 movements where the sweep accounts
+    for 3,850, reporting 5.3% adjusted movement against a true 26.7%.
+
+    This is the one definition of "policy-suspect": the case report, the
+    Phase 0 gate and the time machine all read it from here.
+
+    Residual imprecision, measured rather than assumed. The exact question is
+    "did this allele participate in the sweep", which needs `assertion_dense`
+    and a join per allele. Keying on the date the current span opened answers
+    a near-enough one: on the 31-gene panel it flags 3,868 against the exact
+    3,850 -- 18 alleles, 0.5%, that reached the target bucket at the event's
+    release step from some third bucket. Both give 26.7% adjusted movement.
+    Not worth a second scan of the dense table.
+    """
+    return {(event.from_bucket, event.to_bucket, event.to_date) for event in events}
 
 
 def step_series(connection) -> list[tuple[str, str, str, str, int, float]]:

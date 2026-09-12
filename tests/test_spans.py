@@ -7,13 +7,11 @@ propagates into customer-facing claims.
 
 from datetime import date
 
-import pyarrow as pa
-import pyarrow.parquet as pq
 import pytest
 
 from mendelea.db import connect
-from mendelea.evidence import spans
-from mendelea.evidence.snapshot import SCHEMA, SnapshotManifest, snapshot_path
+from mendelea.evidence import snapshot, spans
+from mendelea.evidence.snapshot import SnapshotManifest, snapshot_path
 
 PANEL = "testpanel"
 
@@ -38,8 +36,7 @@ def write_snapshot(root, release_date: str, rows: list[tuple]) -> SnapshotManife
         for index, (allele_id, bucket, stars) in enumerate(rows)
     ]
     path = snapshot_path(root, date.fromisoformat(release_date), PANEL)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    pq.write_table(pa.Table.from_pylist(records, schema=SCHEMA), path)
+    snapshot.write_snapshot(path, records)
 
     return SnapshotManifest(
         snapshot_id=f"clinvar-{release_date.replace('-', '')}-{PANEL}",

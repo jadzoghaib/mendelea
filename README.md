@@ -86,6 +86,23 @@ BRCA1, release 2019-06-03:  0.36 MB fetched from a 19.1 MB file  (98.1% saved)
 `bgzf.py` and `tabix.py` implement this in pure Python — no pysam, which does
 not build cleanly on Windows.
 
+### Three dependencies, and why not four
+
+`duckdb`, `requests`, and nothing else at runtime. DuckDB already read every
+snapshot in place; it now writes them too, which retired `pyarrow` — by an
+order of magnitude the largest thing the project installed. That was not
+housekeeping: pyarrow ships an unsigned native library, and Windows Smart App
+Control blocked it outright on the development machine, taking the whole test
+suite down at collection time. The README warned that every dependency is one
+more thing that can fail on someone else's laptop. It failed on ours.
+
+Rows reach Parquet through a JSON-lines spill file rather than parameter
+binding, because DuckDB's `executemany` costs about 10 ms per row — five
+minutes for a 30,000-variant gene, against 0.3 s for the same rows via
+`read_json`. Column types are declared, not inferred, so an all-NULL column in
+a small snapshot cannot come back as something else, and the write is still
+byte-identical run to run, which is what the manifest's sha256 depends on.
+
 ---
 
 ## Setup
@@ -122,15 +139,47 @@ than allowed to double the load on NCBI and halve everyone's bandwidth. Pass
 
 ## The time machine (Phase 2)
 
-`mendelea serve` opens a read-only view on the timeline. Pick a gene, drag the
-slider across ingested releases, and the table re-renders as the evidence
-stood on that date — with what each variant is classified as *today* beside
-it.
+`mendelea serve` opens a read-only view on the timeline. Pick a gene, scrub
+across ingested releases, and everything re-renders as the evidence stood on
+that date — with what each variant is classified as *today* beside it.
 
 The headline it exists to deliver:
 
 > On **2018-12-25**, **518** TP53 variants were classified *uncertain*.
 > **102** of those — **19.7%** — are today classified pathogenic or benign.
+
+**The scrubber is the chart.** A bare slider gave a date and nothing else, so
+the reader had to move it to discover where anything happened. It is now a
+stacked column per release showing how the gene's classifications were
+distributed, which makes the shape of the change visible before a single
+click: the uncertain band swelling, the conflicting band appearing, the corpus
+growing underneath. The x axis is proportional to time, so a year of silence
+looks like a year. Clicking or dragging anywhere on it selects a release;
+so do the arrow keys, `Home` and `End`.
+
+Classification colours are a diverging scale — a pathogenic arm and a benign
+arm, two steps each, uncertain as the neutral midpoint — validated for
+protan, deutan and tritan separation against the panel surface rather than
+picked by eye. `OTHER` is hatched instead of coloured: a second grey cannot be
+told from the first, and a seventh hue would compete with a scale it is not
+part of.
+
+**The detected policy event is drawn, not just described.** The release step
+the sweep landed on is shaded and marked, and any row whose movement matches
+it is flagged `! relabelled` and sorted below genuine movement. A reader can
+see at a glance which part of the jump is ClinVar changing a rule.
+
+**Every count is the population, never the page.** The table pages at 300
+rows and says how many rows exist; showing 400 of BRCA2's 9,708 with nothing
+to say so was the previous behaviour. `moved only` and a search over
+variation ID, position or condition narrow the whole result, not the page.
+
+**Any view is a link.** Gene, release, filters and the open variant live in
+the URL fragment, so a specific finding can be pasted into an email and it
+opens on that variant's history. Clicking a row opens a detail pane with the
+variant's full span history as a track plus the raw ClinVar term behind each
+bucket, and the table sheds its least essential columns when the pane leaves
+it less room.
 
 Stdlib only, no build step, no external assets. That is deliberate: this is
 what goes in front of a laboratory in a first meeting, and every dependency is
@@ -138,8 +187,16 @@ one more thing that can fail on someone else's laptop. The query layer
 (`web/queries.py`) is separate from transport, so moving to FastAPI is an
 adapter rather than a rewrite.
 
-Read-only, public ClinVar data only. The case and decision planes are not
-reachable from it — serving those needs auth and tenant isolation (Phase 3).
+The gene ranking and the policy scan are computed once per process, not per
+request: DuckDB admits one writer or many readers to a file and never both, so
+a rebuild waits for the server to stop and a restart is the only invalidation
+needed. Nothing is cached in the browser — a demo that serves a stale page
+after an upgrade is worse than a slow one, and Chrome will do exactly that
+given keep-alive and a `Content-Length`.
+
+Read-only, public ClinVar data only. `/api/case/report` is the one
+authenticated endpoint and the only place tenant data is reachable; the tenant
+comes from the token, never from the request.
 
 Reclassification rates by gene, 2018→2025, from the running demo:
 
@@ -221,7 +278,7 @@ steps in this corpus run 1–3%. Flagged movement is reported separately rather
 than discarded, so the adjustment stays visible:
 
 ```
-movement rate, policy-adjusted    8.8%   (raw 67.1%)
+movement rate, policy-adjusted   36.8%   (raw 67.1%)
 ACTIONABLE movement rate          7.2%   (excludes CONFLICTING entirely,
                                           so policy events cannot inflate it)
 ```
@@ -229,6 +286,24 @@ ACTIONABLE movement rate          7.2%   (excludes CONFLICTING entirely,
 **Quote 7.2%, never 67%.** Telling a laboratory that 5,843 of its variants
 moved when a rule changed would send it re-reviewing thousands of cases for
 nothing — the fastest possible way to lose the customer.
+
+#### The adjusted figure was itself wrong, in the other direction
+
+It read 8.8% until the suspect rule was corrected. A movement counted as
+policy-suspect if its *transition* matched a detected event, which flagged
+every UNCERTAIN → CONFLICTING move the timeline has ever held — 4,995 of them
+— when the sweep accounts for 2,596. The rest are ordinary: a submitter
+disagrees, a variant becomes conflicted, at a release step nowhere near the
+event. Subtracting those understated real movement by a factor of four.
+
+A movement is now suspect only if the transition matches an event *and* the
+variant's current state began at that event's release step. The same
+correction moves the 31-gene panel from 5.3% to 26.7%. Neither number is the
+quotable one and that is the point: the adjusted rate is still dominated by
+movement into CONFLICTING, which is real but tells a laboratory nothing it can
+act on. **The actionable rate does not move at all** — 7.2% and 4.6% before
+and after — because it excludes CONFLICTING by construction. A metric that
+survives a bug in the adjustment beside it is the one to build a business on.
 
 ## The case plane (Phase 3)
 
@@ -371,6 +446,19 @@ These are real and should be read before quoting any number this produces.
   undetected. Ingest densely around any suspected event before trusting a
   negative result, and treat the threshold as panel-specific rather than
   universal.
+- **Policy attribution catches sweeps, not gradual policy effects.** Only a
+  transition large enough to trip the threshold in one release step is
+  flagged. ClinVar's conflict rule changed effective June 2022 and the
+  variant-level aggregate was recomputed in a detectable burst, but any part
+  of it that trickled across other releases is counted as ordinary movement.
+  This is the main reason the policy-adjusted rate is worth less than the
+  actionable one.
+- **The suspect key is a near-enough proxy, measured as such.** Exactly
+  "did this allele participate in the sweep" needs `assertion_dense` and a
+  join per allele. Keying on the date the current span opened answers it to
+  within 18 alleles of 3,850 on the 31-gene panel — 0.5%, and identical to one
+  decimal place in the reported rate. Stated in `policy.suspect_keys` too,
+  since that is where someone will look.
 - **Absence is only meaningful within a panel.** Spans are built per panel
   over identical gene regions. Change the gene list and `ABSENT` transitions
   become artefacts, which is why spans are never built across panels.
@@ -386,6 +474,13 @@ These are real and should be read before quoting any number this produces.
 pytest -q
 ```
 
-The suite is offline by default. The tests worth reading first are
-`test_spans.py` (the bitemporal invariants — every headline number is a query
-over that table) and the drift guard at the top of `test_clinvar.py`.
+228 tests, offline by default. The ones worth reading first are `test_spans.py`
+(the bitemporal invariants — every headline number is a query over that table)
+and the drift guard at the top of `test_clinvar.py`.
+
+Two of them exist because of this round's bugs, and both are the kind a green
+suite happily hides: a movement flagged as a relabelling when the same
+transition happened at an unrelated release, and a page of 300 rows reported
+as though it were the whole population. `test_snapshot.py` covers the Parquet
+round trip column by column, including the empty snapshot and the case where
+a failed write must leave nothing behind.

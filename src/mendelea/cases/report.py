@@ -91,8 +91,14 @@ WHERE cv.tenant_id = $tenant
 """
 
 
-def build(connection, tenant_id: str, suspect_pairs: set | None = None) -> CaseReport:
-    """Reconcile one tenant's reported variants against the evidence timeline."""
+def build(connection, tenant_id: str,
+          suspect: set[tuple[str, str, str]] | None = None) -> CaseReport:
+    """Reconcile one tenant's reported variants against the evidence timeline.
+
+    `suspect` is `policy.suspect_keys(...)`; a finding is policy-suspect when
+    its transition and the date its current state began match a detected
+    event, so a relabelling is never presented as the evidence moving.
+    """
     # Scope coverage to the panel the timeline actually holds. Reading it from
     # snapshot_manifest unfiltered reports whichever panel was ingested last,
     # and a coverage window that never applied to this comparison.
@@ -112,7 +118,7 @@ def build(connection, tenant_id: str, suspect_pairs: set | None = None) -> CaseR
         evidence_to=str(latest),
         reconciliation=counts,
     )
-    suspect_pairs = suspect_pairs or set()
+    suspect = suspect or set()
 
     for row in rows:
         (case_ref, gene, allele_id, contig, pos, ref, alt, reported_classification,
@@ -142,8 +148,8 @@ def build(connection, tenant_id: str, suspect_pairs: set | None = None) -> CaseR
         elif now_bucket == "ABSENT":
             report.retracted += 1
 
-        suspect = (at_signout, now_bucket) in suspect_pairs
-        if suspect:
+        is_suspect = (at_signout, now_bucket, str(changed_on)) in suspect
+        if is_suspect:
             report.policy_suspect += 1
 
         report.findings.append({
@@ -159,7 +165,7 @@ def build(connection, tenant_id: str, suspect_pairs: set | None = None) -> CaseR
             "clinvar_now": now_clnsig,
             "changed_on": str(changed_on) if changed_on else None,
             "actionable": now_bucket in ACTIONABLE_BUCKETS,
-            "policy_suspect": suspect,
+            "policy_suspect": is_suspect,
         })
 
     # Most consequential first: actionable, then by ClinVar review status.

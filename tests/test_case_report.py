@@ -112,9 +112,18 @@ def test_tenants_are_isolated(evidence):
 def test_policy_suspect_findings_are_marked(evidence):
     load_cases(evidence, [("C1", "A2", "2019-01-02")])
     rep = case_report.build(evidence, "lab",
-                            suspect_pairs={("UNCERTAIN", "PATHOGENIC")})
+                            suspect={("UNCERTAIN", "PATHOGENIC", "2025-01-02")})
     assert rep.policy_suspect == 1
     assert rep.findings[0]["policy_suspect"] is True
+
+
+def test_the_same_transition_at_another_release_is_not_suspect(evidence):
+    """Only movement that landed at the event's own release step is a relabelling."""
+    load_cases(evidence, [("C1", "A2", "2019-01-02")])
+    rep = case_report.build(evidence, "lab",
+                            suspect={("UNCERTAIN", "PATHOGENIC", "2023-06-01")})
+    assert rep.policy_suspect == 0
+    assert rep.findings[0]["policy_suspect"] is False
 
 
 def test_coverage_is_scoped_to_the_loaded_panel(evidence, tmp_path):

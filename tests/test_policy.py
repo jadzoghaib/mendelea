@@ -90,9 +90,11 @@ def test_appearance_and_retraction_are_not_policy_events(tmp_path):
     assert events == []
 
 
-def test_suspect_pairs_round_trip(swept):
-    events = policy.detect(swept, 0.05)
-    assert policy.suspect_pairs(events) == {e.pair for e in events}
+def test_suspect_keys_carry_the_event_release_date(swept):
+    """The date is part of the key: the same transition at another release is evidence."""
+    keys = policy.suspect_keys(policy.detect(swept, 0.05))
+    assert ("UNCERTAIN", "CONFLICTING", "2022-01-02") in keys
+    assert all(len(key) == 3 for key in keys)
 
 
 def test_step_series_returns_everything_unfiltered(swept):

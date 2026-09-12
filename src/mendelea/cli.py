@@ -168,7 +168,7 @@ def cmd_spike(args) -> int:
     with connect(cfg.warehouse, read_only=True) as connection:
         events = policy.detect(connection, threshold=args.policy_threshold)
         summary = movement.panel_movement(
-            connection, baseline, current, suspect=policy.suspect_pairs(events)
+            connection, baseline, current, suspect=policy.suspect_keys(events)
         )
         detail = movement.movement_detail(connection, baseline, current, limit=args.limit)
 
@@ -208,7 +208,7 @@ def cmd_spike(args) -> int:
         print(f"  Sample of moved variants (top {len(detail)} by current review status):")
         print(f"  {'gene':<8} {'variation':>10}  {'was':<12} -> {'now':<20} {'stars':>5}")
         for row in detail:
-            _, gene, variation_id, from_bucket, _, to_bucket, to_stars, _ = row
+            _, gene, variation_id, from_bucket, _, to_bucket, to_stars, _, _ = row
             print(f"  {gene or '?':<8} {variation_id:>10}  "
                   f"{from_bucket:<12} -> {to_bucket:<20} {to_stars:>5}")
         print()
@@ -398,7 +398,7 @@ def cmd_case_report(args) -> int:
     cfg = config_module.load()
     with connect(cfg.warehouse, read_only=True) as connection:
         events = policy.detect(connection)
-        rep = case_report.build(connection, args.tenant, policy.suspect_pairs(events))
+        rep = case_report.build(connection, args.tenant, policy.suspect_keys(events))
 
     r = rep.reconciliation
     print("\n  MENDELEA REANALYSIS REPORT")

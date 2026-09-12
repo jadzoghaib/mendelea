@@ -13,6 +13,7 @@ import requests
 
 from mendelea import tenancy
 from mendelea.cases import model
+from mendelea.web import server as server_module
 from mendelea.web.server import make_handler
 from tests.test_policy import build
 
@@ -48,6 +49,13 @@ def test_context_reports_the_loaded_panel(base_url):
     assert payload["releases"] == ["2019-01-02", "2025-01-02"]
 
 
+def test_context_carries_detected_policy_events(base_url):
+    """Half the corpus moved in one step here, which the heuristic must report."""
+    payload = requests.get(f"{base_url}/api/context", timeout=10).json()
+    assert payload["policy_events"][0]["to_bucket"] == "PATHOGENIC"
+    assert payload["policy_events"][0]["to_date"] == "2025-01-02"
+
+
 def test_variants_endpoint(base_url):
     payload = requests.get(
         f"{base_url}/api/variants", params={"gene": "TESTGENE", "on": "2019-01-02"},
@@ -55,6 +63,40 @@ def test_variants_endpoint(base_url):
     ).json()
     assert payload["headline"]["uncertain"] == 2
     assert any(v["moved"] for v in payload["variants"])
+    assert payload["total"] == 2 and payload["offset"] == 0
+
+
+def test_variants_page_carries_the_population_count(base_url):
+    payload = requests.get(
+        f"{base_url}/api/variants",
+        params={"gene": "TESTGENE", "on": "2019-01-02", "limit": "1", "offset": "1"},
+        timeout=10,
+    ).json()
+    assert len(payload["variants"]) == 1
+    assert payload["total"] == 2
+
+
+def test_moved_filter_and_search_reach_the_query(base_url):
+    moved = requests.get(
+        f"{base_url}/api/variants",
+        params={"gene": "TESTGENE", "on": "2019-01-02", "moved": "1"}, timeout=10,
+    ).json()
+    assert [v["allele_id"] for v in moved["variants"]] == ["A2"]
+    found = requests.get(
+        f"{base_url}/api/variants",
+        params={"gene": "TESTGENE", "on": "2019-01-02", "q": "Test"}, timeout=10,
+    ).json()
+    assert found["total"] == 2
+
+
+def test_composition_endpoint(base_url):
+    payload = requests.get(
+        f"{base_url}/api/composition", params={"gene": "testgene"}, timeout=10
+    ).json()
+    assert payload["gene"] == "TESTGENE"
+    assert [c["on"] for c in payload["composition"]] == ["2019-01-02", "2025-01-02"]
+    assert payload["composition"][0]["counts"] == {"UNCERTAIN": 2}
+    assert requests.get(f"{base_url}/api/composition", timeout=10).status_code == 400
 
 
 def test_timeline_endpoint(base_url):
@@ -75,6 +117,11 @@ def test_timeline_endpoint(base_url):
     {"gene": "TESTGENE"},                       # missing date
     {"on": "2019-01-02"},                       # missing gene
     {"gene": "A" * 200, "on": "2019-01-02"},    # absurd length
+    {"gene": "TESTGENE", "on": "2019-01-02", "limit": "0"},
+    {"gene": "TESTGENE", "on": "2019-01-02", "limit": "5000"},
+    {"gene": "TESTGENE", "on": "2019-01-02", "offset": "-1"},
+    {"gene": "TESTGENE", "on": "2019-01-02", "q": "<script>"},
+    {"gene": "TESTGENE", "on": "2019-01-02", "q": "x" * 61},
 ])
 def test_bad_input_is_rejected_with_400(base_url, params):
     response = requests.get(f"{base_url}/api/variants", params=params, timeout=10)
@@ -113,6 +160,21 @@ def test_errors_never_leak_a_traceback(base_url):
     )
     assert response.status_code == 400
     assert "Traceback" not in response.text
+
+
+def test_an_internal_failure_is_logged_not_served(base_url, monkeypatch, caplog):
+    """The message can carry SQL and paths; the client gets a status, the log gets the rest."""
+    def explode(*_):
+        raise RuntimeError("secret detail: SELECT * FROM assertion_span")
+    monkeypatch.setattr(server_module.queries, "timeline", explode)
+
+    response = requests.get(
+        f"{base_url}/api/timeline", params={"allele_id": "A1"}, timeout=10
+    )
+    assert response.status_code == 500
+    assert response.json() == {"error": "internal error"}
+    assert "secret detail" not in response.text
+    assert "secret detail" in caplog.text
 
 
 # --------------------------------------------------------------------------

@@ -77,7 +77,7 @@ WITH baseline AS (
       AND valid_to   >  CAST($baseline AS DATE)
 ),
 current AS (
-    SELECT allele_id, bucket, stars, clnsig_raw
+    SELECT allele_id, bucket, stars, clnsig_raw, valid_from
     FROM assertion_span
     WHERE valid_from <= CAST($current AS DATE)
       AND valid_to   >  CAST($current AS DATE)
@@ -85,7 +85,8 @@ current AS (
 SELECT b.allele_id, b.gene, b.variation_id,
        b.bucket AS from_bucket, b.stars AS from_stars,
        c.bucket AS to_bucket,   c.stars AS to_stars,
-       c.clnsig_raw AS to_clnsig
+       c.clnsig_raw AS to_clnsig,
+       c.valid_from AS changed_on
 FROM baseline b
 JOIN current c USING (allele_id)
 WHERE b.bucket IS DISTINCT FROM c.bucket
@@ -93,12 +94,14 @@ WHERE b.bucket IS DISTINCT FROM c.bucket
 
 
 def panel_movement(connection, baseline: str, current: str,
-                   suspect: set[tuple[str, str]] | None = None) -> MovementSummary:
+                   suspect: set[tuple[str, str, str]] | None = None) -> MovementSummary:
     """Population-level movement between two dates. No customer data required.
 
-    `suspect` is the set of (from_bucket, to_bucket) pairs implicated by
-    detected policy events; matching movements are counted separately rather
-    than discarded, so the adjustment stays visible and reversible.
+    `suspect` is `policy.suspect_keys(...)`: (from_bucket, to_bucket, to_date)
+    triples from detected policy events. A movement matching one -- same
+    transition, current state dating from that release step -- is counted
+    separately rather than discarded, so the adjustment stays visible and
+    reversible.
     """
     # DuckDB rejects named parameters a statement does not reference, so each
     # query gets exactly the bindings it uses.
@@ -135,7 +138,7 @@ def panel_movement(connection, baseline: str, current: str,
     retracted = sum(1 for r in rows if r[5] == "ABSENT")
 
     suspect = suspect or set()
-    policy_suspect = sum(1 for r in rows if (r[3], r[5]) in suspect)
+    policy_suspect = sum(1 for r in rows if (r[3], r[5], str(r[8])) in suspect)
 
     return MovementSummary(
         baseline_date=baseline,

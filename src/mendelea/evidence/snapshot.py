@@ -20,8 +20,7 @@ from dataclasses import asdict, dataclass
 from datetime import date, datetime, timezone
 from pathlib import Path
 
-import pyarrow as pa
-import pyarrow.parquet as pq
+import duckdb
 
 from . import clinvar, tabix
 from .bgzf import decompress, iter_complete_lines
@@ -29,22 +28,66 @@ from .genes import GeneRegion, verify_regions
 from .normalize import allele_id
 from .remote import RemoteFile, fetch_cached
 
-SCHEMA = pa.schema(
-    [
-        ("allele_id", pa.string()),
-        ("variation_id", pa.string()),
-        ("contig", pa.string()),
-        ("pos", pa.int64()),
-        ("ref", pa.string()),
-        ("alt", pa.string()),
-        ("gene", pa.string()),
-        ("bucket", pa.string()),
-        ("stars", pa.int8()),
-        ("clnsig_raw", pa.string()),
-        ("clnrevstat_raw", pa.string()),
-        ("condition", pa.string()),
-    ]
+# The snapshot schema, as DuckDB column declarations. DuckDB already read
+# every snapshot in place; it now writes them too. pyarrow used to do the
+# writing and was, by an order of magnitude, the largest dependency in the
+# project. Its native library ships unsigned, and Windows Smart App Control
+# blocked it outright on the machine this project is developed on -- the "one
+# more thing that can fail on someone else's laptop" the README warns about,
+# except it was ours.
+COLUMNS = (
+    ("allele_id", "VARCHAR"),
+    ("variation_id", "VARCHAR"),
+    ("contig", "VARCHAR"),
+    ("pos", "BIGINT"),
+    ("ref", "VARCHAR"),
+    ("alt", "VARCHAR"),
+    ("gene", "VARCHAR"),
+    ("bucket", "VARCHAR"),
+    ("stars", "TINYINT"),
+    ("clnsig_raw", "VARCHAR"),
+    ("clnrevstat_raw", "VARCHAR"),
+    ("condition", "VARCHAR"),
 )
+
+_COLUMN_LIST = ", ".join(name for name, _ in COLUMNS)
+_COLUMN_TYPES = ", ".join(f"'{name}': '{kind}'" for name, kind in COLUMNS)
+
+
+def write_snapshot(path: Path, rows: list[dict]) -> None:
+    """Write `rows` (dicts keyed by COLUMNS) as a Parquet snapshot, atomically.
+
+    Rows travel through a JSON-lines spill file rather than parameter
+    binding: DuckDB's executemany costs about 10 ms per row, which for a
+    30,000-variant gene is five minutes; its JSON reader loads the same rows
+    in a third of a second. JSON also keeps NULL and empty string apart,
+    which CSV would not. Types are declared rather than inferred, so an
+    all-NULL column in a small snapshot cannot come out as something else.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    spill = path.with_suffix(".rows.jsonl")
+    partial = path.with_suffix(".parquet.partial")
+    try:
+        with spill.open("w", encoding="utf-8") as handle:
+            for row in rows:
+                handle.write(json.dumps({name: row.get(name) for name, _ in COLUMNS}))
+                handle.write("\n")
+
+        connection = duckdb.connect()
+        try:
+            connection.execute(
+                f"COPY (SELECT {_COLUMN_LIST} FROM read_json($spill, "
+                f"format = 'newline_delimited', columns = {{{_COLUMN_TYPES}}})) "
+                "TO $target (FORMAT PARQUET, COMPRESSION ZSTD)",
+                {"spill": str(spill), "target": str(partial)},
+            )
+        finally:
+            connection.close()
+
+        partial.replace(path)  # atomic: a killed run leaves no half-snapshot behind
+    finally:
+        spill.unlink(missing_ok=True)
+        partial.unlink(missing_ok=True)
 
 
 @dataclass
@@ -132,10 +175,10 @@ def ingest_release(
     cache_dir: Path,
     assembly: str = "GRCh38",
     force: bool = False,
-) -> tuple[SnapshotManifest, bool]:
+) -> IngestResult:
     """Fetch one release restricted to `regions` and write an immutable snapshot.
 
-    Returns (manifest, written). `written` is False when the snapshot already
+    Returns an IngestResult whose `written` is False when the snapshot already
     existed, which is the normal case on re-runs -- snapshots are never
     rewritten, only skipped.
     """
@@ -205,12 +248,7 @@ def ingest_release(
     warnings = verify_regions(regions, observed)
 
     ordered = sorted(rows.values(), key=lambda r: (r["contig"], r["pos"], r["allele_id"]))
-    table = pa.Table.from_pylist(ordered, schema=SCHEMA)
-
-    target.parent.mkdir(parents=True, exist_ok=True)
-    tmp = target.with_suffix(".parquet.partial")
-    pq.write_table(table, tmp, compression="zstd")
-    tmp.replace(target)  # atomic: a killed run leaves no half-snapshot behind
+    write_snapshot(target, ordered)
 
     manifest = SnapshotManifest(
         snapshot_id=f"clinvar-{release.stamp}-{panel_slug}",
