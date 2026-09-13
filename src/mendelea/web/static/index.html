@@ -335,11 +335,15 @@ const el = (name, attrs = {}, text) => {
 // right: whichever load finished last erased the other's message, a later
 // filter click wiped a still-valid explanation, and a superseded refresh
 // could paint a dead gene's error over a healthy view.
-const ERRORS = {page: null, chart: null, rows: null};
+// `page` is for failures that end the session -- a warehouse with no
+// timeline, a boot that threw. It has no success path to clear it because
+// there is no recovering from those. Everything that can succeed later owns
+// a slot it clears itself.
+const ERRORS = {page: null, chart: null, rows: null, variant: null};
 
 function setError(slot, message){
   ERRORS[slot] = message || null;
-  const active = [ERRORS.page, ERRORS.chart, ERRORS.rows].filter(Boolean);
+  const active = Object.values(ERRORS).filter(Boolean);
   $('err').textContent = active.join(' · ');
   $('err').hidden = active.length === 0;
 }
@@ -523,8 +527,22 @@ async function refresh(geneChanged){
 }
 
 // ---- composition chart: the scrubber --------------------------------------------
-async function loadComposition(){
+// One request per gene at a time. Scrubbing can start a second fetch for a
+// gene the first has not answered for yet, and if they disagree -- one
+// succeeds, the other fails -- the failure's cache eviction throws away the
+// success's data. Sharing the promise makes that interleaving impossible
+// and halves the requests while the reader drags.
+const INFLIGHT = {};
+
+function loadComposition(){
   const gene = S.gene;
+  if (!INFLIGHT[gene]) {
+    INFLIGHT[gene] = fetchComposition(gene).finally(() => { delete INFLIGHT[gene]; });
+  }
+  return INFLIGHT[gene];
+}
+
+async function fetchComposition(gene){
   // Nothing is cached on failure. Caching an empty series would leave the
   // scrubber permanently blank for that gene, because `refresh` only fetches
   // when the entry is missing — and a stale entry is how the previous gene's
@@ -536,9 +554,9 @@ async function loadComposition(){
     return null;
   } catch (err) {
     delete COMPOSITION[gene];
-    // Returned, not shown: the row load that follows clears the banner on
-    // success, so the caller re-asserts this after it. A blank chart with no
-    // explanation is the failure mode that reads as "this gene has no data".
+    // Returned, not shown: the caller owns the error slot and knows whether
+    // its refresh is still the current one. A blank chart with no
+    // explanation reads as "this gene has no data", which is a lie.
     return `could not load the release history for ${gene}: ${err.message}`;
   }
 }
@@ -750,7 +768,8 @@ async function openVariant(v, tr){
   // leave the pane describing one variant while the selection, the URL and
   // the highlighted row all name another.
   if (S.allele !== v.allele_id) return;
-  if (d.error) return showError(d.error);
+  if (d.error) return setError('variant', d.error);
+  setError('variant', null);
   const steps = d.timeline;
   const label = v.contig ? `${v.gene} ${v.contig}:${v.pos} ${v.ref}>${v.alt}` : v.allele_id;
   $('paneTitle').textContent = label;
@@ -771,6 +790,7 @@ async function openVariant(v, tr){
 
 function closePane(){
   S.allele = null; TRACK = null; writeHash();
+  setError('variant', null);   // the pane is gone; its complaint goes with it
   $('pane').hidden = true;
   $('work').classList.remove('paned');
   document.querySelectorAll('#rows tr.sel').forEach(r => r.classList.remove('sel'));
