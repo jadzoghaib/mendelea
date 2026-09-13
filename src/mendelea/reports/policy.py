@@ -1,9 +1,19 @@
 """Detecting policy events: relabelings that are not evidence movement.
 
-The problem this exists to solve, found the hard way on real data:
+The problem this exists to solve, found the hard way on real data. The same
+event, measured on the two panels this repository ingests:
 
-    2022-12-24 -> 2023-12-30 :  UNCERTAIN -> CONFLICTING   6,107 variants
-                                = 14.5% of the entire corpus in one step
+    spike, 18 snapshots
+    2023-02-26 -> 2023-04-30 :  UNCERTAIN -> CONFLICTING   5,843 variants
+                                = 13.3% of the corpus in one nine-week step
+
+    hereditary-cancer, 8 snapshots
+    2022-12-24 -> 2023-12-30 :  UNCERTAIN -> CONFLICTING   7,446 variants
+                                = 5.3% of the corpus, diluted across a year
+
+The share falls as the snapshots thin out, because a coarse step spreads the
+sweep through a year of ordinary movement -- which is why the threshold is
+panel-specific and why a negative result means little at annual density.
 
 Adjacent release steps move 1-3%. A change of that magnitude is not thousands
 of laboratories independently revising thousands of variants in the same
@@ -21,7 +31,7 @@ effective June 2022:
 Why this matters commercially, not just scientifically
 ------------------------------------------------------
 The product tells a laboratory "these variants you reported have moved". If it
-reports 6,107 variants as having moved when what actually happened is that
+reports 5,843 variants as having moved when what actually happened is that
 ClinVar changed a rule, the laboratory re-reviews thousands of cases for
 nothing, discovers the cause, and never trusts the tool again. Detecting these
 is not a refinement -- it is a precondition for the product being safe to sell.
@@ -37,7 +47,7 @@ from dataclasses import dataclass
 
 # A single release step moving more than this share of the classified corpus
 # between two specific buckets is treated as suspect. Chosen from observation:
-# real steps in this corpus run 1-3%, the known policy event ran 14.5%.
+# real steps in this corpus run 1-3%, the known policy event ran 13.3%.
 DEFAULT_THRESHOLD = 0.05
 
 
@@ -137,6 +147,15 @@ def suspect_keys(events: list[PolicyEvent]) -> set[tuple[str, str, str]]:
     3,850 -- 18 alleles, 0.5%, that reached the target bucket at the event's
     release step from some third bucket. Both give 26.7% adjusted movement.
     Not worth a second scan of the dense table.
+
+    The other way this key could drift is a star-only span break after the
+    sweep: review status changes, a new span opens, and the date no longer
+    matches. Measured on both panels rather than argued about, including the
+    18-snapshot one where there is most room for it, and it is exactly zero
+    -- a variant re-aggregated to CONFLICTING has its review status
+    recomputed in the same step, and conflicted variants rarely move star
+    again in this window. Resolving it would cost a gaps-and-islands query
+    over every span for a correction of nothing.
     """
     return {(event.from_bucket, event.to_bucket, event.to_date) for event in events}
 

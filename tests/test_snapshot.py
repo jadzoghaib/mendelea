@@ -11,13 +11,15 @@ from mendelea.evidence import snapshot
 
 
 def read_back(path):
+    """Bound, not interpolated -- a tmp path containing a quote would
+    otherwise break the statement, and `write_snapshot` binds its own."""
     connection = duckdb.connect()
     try:
         described = connection.execute(
-            f"DESCRIBE SELECT * FROM read_parquet('{path.as_posix()}')"
+            "DESCRIBE SELECT * FROM read_parquet($p)", {"p": path.as_posix()}
         ).fetchall()
         rows = connection.execute(
-            f"SELECT * FROM read_parquet('{path.as_posix()}') ORDER BY pos"
+            "SELECT * FROM read_parquet($p) ORDER BY pos", {"p": path.as_posix()}
         ).fetchall()
     finally:
         connection.close()
@@ -77,7 +79,15 @@ def test_a_failed_write_leaves_no_partial_snapshot(tmp_path):
 
 
 def test_identical_rows_write_identical_bytes(tmp_path):
-    """Content addressing (the manifest sha256) relies on this."""
+    """Content addressing (the manifest sha256) relies on this.
+
+    Within one DuckDB version. The Parquet writer stamps itself into the
+    file's `created_by` metadata, so an upgrade changes the bytes of an
+    otherwise identical snapshot. That does not invalidate a stored
+    checksum -- snapshots are never rewritten -- but a forced re-ingest
+    after an upgrade will produce a new one, which is what
+    `pipeline_git_sha` and the provenance audit exist to make visible.
+    """
     a, b = tmp_path / "a.parquet", tmp_path / "b.parquet"
     snapshot.write_snapshot(a, [row(pos=1), row(pos=2)])
     snapshot.write_snapshot(b, [row(pos=1), row(pos=2)])

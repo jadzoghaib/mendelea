@@ -35,7 +35,7 @@ def loaded_panel(connection) -> dict:
         row = connection.execute(
             "SELECT COUNT(DISTINCT allele_id), COUNT(DISTINCT gene) FROM assertion_span"
         ).fetchone()
-    except duckdb.Error:
+    except duckdb.CatalogException:
         return {"panel": None, "alleles": 0, "genes": 0}
     return {"panel": spans.loaded_panel(connection), "alleles": row[0], "genes": row[1]}
 
@@ -51,8 +51,26 @@ def release_dates(connection, panel: str | None) -> list[str]:
         return []
     try:
         return spans.release_dates(connection, panel)
-    except duckdb.Error:
+    except duckdb.CatalogException:
         return []
+
+
+def timeline_start(connection) -> str | None:
+    """The earliest date the timeline can actually speak about.
+
+    Not the same as the earliest release: `spans.build` records every
+    manifest but skips any whose Parquet file is missing, which `provenance`
+    reports and a half-synced data directory produces. The slider still stops
+    on every ingested release, because a release we hold no data for is a
+    real gap and hiding it would be worse. But anchoring the gene ranking to
+    a date no span covers returned an empty list, and the page reads an empty
+    gene list as "no timeline at all".
+    """
+    try:
+        row = connection.execute("SELECT MIN(valid_from) FROM assertion_span").fetchone()
+    except duckdb.CatalogException:
+        return None
+    return str(row[0]) if row and row[0] else None
 
 
 def policy_events(connection) -> list[policy.PolicyEvent]:
@@ -62,10 +80,14 @@ def policy_events(connection) -> list[policy.PolicyEvent]:
     behind. A warehouse without it (an older build, or a trimmed copy) still
     has a perfectly good timeline; it simply cannot separate relabelling from
     movement, and the UI then says nothing rather than something wrong.
+
+    Only a missing table is tolerated. Catching every DuckDB error here would
+    turn a broken `DETECT_SQL` into a silently disabled safety feature, and
+    the whole point of this one is that it fails loudly enough to be noticed.
     """
     try:
         return policy.detect(connection)
-    except duckdb.Error:
+    except duckdb.CatalogException:
         return []
 
 
@@ -92,10 +114,11 @@ def _suspect_cte(events: list[policy.PolicyEvent]) -> str:
     return "suspect(from_bucket, to_bucket, on_date) AS (VALUES " + ", ".join(rows) + ")"
 
 
-# A rate computed from fewer VUS than this is not a headline. The README
-# quotes per-gene rates only above this bar for the same reason: the thinnest
-# declared gene in the 31-gene panel carries 91 uncertain variants at
-# baseline, and seven of them moving reads as "7.7%".
+# A rate computed from no more uncertain variants than this is not a headline.
+# The README quotes per-gene rates only *above* this bar for the same reason,
+# and the comparison here matches it exactly: the thinnest declared gene in
+# the 31-gene panel carries 91 uncertain variants at baseline, and seven of
+# them moving reads as "7.7%".
 HEADLINE_VUS_FLOOR = 200
 
 ACTIONABLE_BY_GENE_SQL = """
@@ -136,13 +159,13 @@ def genes(connection, on: str | None, allowed: set[str] | None = None) -> list[d
         return []
     try:
         rows = connection.execute(ACTIONABLE_BY_GENE_SQL, {"on": on}).fetchall()
-    except duckdb.Error:
+    except duckdb.CatalogException:
         return []
 
     out = [
         {"gene": r[0], "vus": r[1], "actionable": r[2],
          "actionable_pct": round(100.0 * r[2] / r[1], 1) if r[1] else 0.0,
-         "thin": r[1] < HEADLINE_VUS_FLOOR}
+         "thin": r[1] <= HEADLINE_VUS_FLOOR}
         for r in rows
         if allowed is None or r[0] in allowed
     ]
@@ -187,7 +210,7 @@ def panel_headline(connection, on: str | None) -> dict | None:
         vus, to_path, to_benign = connection.execute(
             PANEL_HEADLINE_SQL, {"on": on}
         ).fetchone()
-    except duckdb.Error:
+    except duckdb.CatalogException:
         return None
     actionable = (to_path or 0) + (to_benign or 0)
     vus = vus or 0
@@ -234,6 +257,16 @@ WHERE s.gene = $gene
 """
 
 
+def _like_escape(value: str) -> str:
+    """Neutralise LIKE wildcards in a user's search term.
+
+    Unescaped, `_` matches any single character, so searching a condition
+    containing one quietly returns unrelated conditions as well. The
+    backslash must go first or it would escape the escapes.
+    """
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 def _filters(only_moved: bool, q: str | None) -> tuple[str, dict]:
     """Optional predicates, and exactly the bindings they use.
 
@@ -251,8 +284,8 @@ def _filters(only_moved: bool, q: str | None) -> tuple[str, dict]:
             clauses.append("AND (s.variation_id = $q OR CAST(s.pos AS VARCHAR) LIKE $q_prefix)")
             params.update(q=q, q_prefix=q + "%")
         else:
-            clauses.append("AND s.condition ILIKE $q_like")
-            params["q_like"] = "%" + q + "%"
+            clauses.append(r"AND s.condition ILIKE $q_like ESCAPE '\'")
+            params["q_like"] = "%" + _like_escape(q) + "%"
     return "\n  ".join(clauses), params
 
 

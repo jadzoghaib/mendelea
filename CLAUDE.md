@@ -35,9 +35,12 @@ to JSON lines and loads them with `read_json`; binding them one by one costs
 - **AlphaMissense predictions are CC BY 4.0**, relicensed March 2024. The
   non-commercial restriction is gone. A third-party derivative dataset
   (Zenodo 10255502) is still NC-SA — check which artifact you ingest.
-- **ClinVar re-aggregated in early 2023**, relabelling 6,107 variants
-  UNCERTAIN → CONFLICTING in one nine-week window. Naive reading gives 40%
-  movement instead of 4.6%. `reports/policy.py` detects this class of event.
+- **ClinVar re-aggregated in early 2023**, relabelling 5,843 variants
+  UNCERTAIN → CONFLICTING in one nine-week window (2023-02-26 → 2023-04-30,
+  13.3% of the spike corpus). At the 31-gene panel's annual density the same
+  event reads 7,446 across a year, 5.3% — a second measure of one event, not
+  a second event; never quote the two interchangeably. Naive reading gives
+  40% movement instead of 4.6%. `reports/policy.py` detects this class.
   **Quote 4.6% actionable, never 40% total.**
 - **Policy-suspect is keyed on (from_bucket, to_bucket, event_date)**, via
   `policy.suspect_keys` — the one definition, read by the Phase 0 gate, the
@@ -65,7 +68,7 @@ to JSON lines and loads them with `read_json`; binding them one by one costs
 
 ## Honest state
 
-237 tests pass. Every substantive bug this project has had was found by reading
+242 tests pass. Every substantive bug this project has had was found by reading
 code or running it on real data — never by the test suite, which was green
 throughout. Budget for reading, not just testing.
 
@@ -74,5 +77,13 @@ error, and a CSS comment that silently swallowed the rule after it were all
 found by running the thing and reading the output, with 199 tests green. The
 browser is part of the test surface for `web/`; screenshots alone would have
 missed all three.
+
+The PR reviewers (cubic, Cursor Bugbot) then caught a further six that neither
+reading nor running had: two request races, an unescaped `_` in a LIKE search,
+a stale figure in `policy.py` that no longer matched either panel, and a search
+test of mine that passed on a filter which never ran. Worth reading their
+output properly rather than merging past it — but check each claim against the
+data before acting, since the one they pushed hardest (a star-only span break
+defeating the policy key) measures to exactly zero on both panels.
 
 No TLS, no rate limiting: bind to 127.0.0.1 only.
