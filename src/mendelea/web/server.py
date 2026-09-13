@@ -108,6 +108,9 @@ def make_handler(warehouse: Path):
                     "releases": releases,
                     "genes": queries.genes(c, baseline, _panel_genes(panel["panel"])),
                     "panel_headline": queries.panel_headline(c, baseline),
+                    # So the page can name the bar it ranked by rather than
+                    # describing a range whose scope it cannot state.
+                    "headline_vus_floor": queries.HEADLINE_VUS_FLOOR,
                     "policy_events": [asdict(e) for e in events],
                 }
             return cache["context"], cache["events"]
