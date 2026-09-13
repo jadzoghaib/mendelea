@@ -102,6 +102,11 @@
   .headline{font-size:16.5px;line-height:1.7;max-width:820px}
   .headline b{font-family:var(--mono);font-size:18px}
   .caption{margin-top:6px;color:var(--ink-dim);font-size:13px;font-style:italic;max-width:820px}
+  /* The whole-panel rate, kept beside the per-gene one. A gene chosen for
+     being the strongest story is only honest next to the panel it came from. */
+  .panelline{margin-top:12px;padding-top:10px;border-top:1px solid var(--line-soft);
+             color:var(--ink-dim);font-size:13px;max-width:820px}
+  .panelline b{color:var(--ink);font-family:var(--mono);font-weight:600}
   .note{margin-top:12px;padding:9px 12px;border:1px solid var(--line);border-left:3px solid var(--warn);
         border-radius:4px;font-size:12.5px;color:var(--ink-dim);max-width:920px}
   .note b{color:var(--ink);font-weight:600}
@@ -229,6 +234,7 @@
       <div>
         <div class="headline" id="headline"></div>
         <div class="caption" id="caption"></div>
+        <div class="panelline" id="panelline" hidden></div>
       </div>
     </div>
     <div class="note" id="policy" hidden></div>
@@ -332,7 +338,11 @@ function xScale(width, left, right){
 // must agree exactly, and PAD keeps the first and last columns off the axes
 // instead of straddling them.
 const CHART = {ML: 44, MR: 14, MT: 16, MB: 24, H: 210, PAD: 15};
-const chartX = width => xScale(width, CHART.ML + CHART.PAD, CHART.MR + CHART.PAD);
+// One release is a real state (a panel mid-ingest). The time scale collapses
+// to a point there, which would pin the only column to the left axis.
+const chartX = width => RELEASES.length < 2
+  ? () => (CHART.ML + width - CHART.MR) / 2
+  : xScale(width, CHART.ML + CHART.PAD, CHART.MR + CHART.PAD);
 
 function niceStep(rough){
   const p = Math.pow(10, Math.floor(Math.log10(rough)));
@@ -369,12 +379,20 @@ async function boot(){
   CONTEXT = await r.json();
   if (CONTEXT.error) return showError(CONTEXT.error);
   RELEASES = CONTEXT.releases; EVENTS = CONTEXT.policy_events || [];
-  if (!RELEASES.length || !CONTEXT.genes.length) return showError('the warehouse holds no timeline; run ingest and spans first');
+  if (!RELEASES.length || !CONTEXT.genes.length){
+    $('ctx').textContent = 'no timeline loaded';
+    return showError('the warehouse holds no timeline; run ingest and spans first');
+  }
 
   $('ctx').textContent = `${CONTEXT.panel.panel} · ${fmt(CONTEXT.panel.alleles)} variants · ${CONTEXT.genes.length} genes · ${RELEASES.length} releases, ${RELEASES[0]} → ${RELEASES[RELEASES.length - 1]}`;
+  // The label states the rate and the count it came from, so a thin gene
+  // argues against itself rather than needing to be hidden.
   $('gene').innerHTML = CONTEXT.genes
-    .map(g => `<option value="${esc(g.gene)}">${esc(g.gene)} — ${fmt(g.alleles)} variants, ${g.moved_pct}% ever moved</option>`)
+    .map(g => `<option value="${esc(g.gene)}">${esc(g.gene)} — ${
+      g.vus ? `${g.actionable_pct}% of ${fmt(g.vus)} uncertain now actionable`
+            : `no uncertain variants in ${esc(RELEASES[0])}`}</option>`)
     .join('');
+  renderPanelLine();
 
   S.gene = CONTEXT.genes[0].gene;
   S.idx = 0;                        // open at the earliest release: the past is the point
@@ -728,6 +746,27 @@ function drawTrack(steps){
   svg.append(el('text', {x: sx(RELEASES[0]), y: Y + BH + 18, 'text-anchor': 'start'}, RELEASES[0]));
   svg.append(el('text', {x: sx(last), y: Y + BH + 18, 'text-anchor': 'end'}, last + ' · now'));
   svg.append(el('text', {x: cx, y: Y - 10, 'text-anchor': cx > W - 70 ? 'end' : (cx < 70 ? 'start' : 'middle')}, 'viewing ' + RELEASES[S.idx]));
+}
+
+function renderPanelLine(){
+  const p = CONTEXT.panel_headline;
+  if (!p || !p.uncertain) return;
+  // Deliberately the same sentence shape as the per-gene headline, so the two
+  // rates are read as the same measurement at two scopes rather than as a
+  // headline and a footnote.
+  // "the whole panel", not "all N genes": the rate is counted over every gene
+  // in the timeline, which includes the neighbours 5 kb of flanking sequence
+  // drags in, while the picker lists only the panel's declared 31. The two
+  // differ by 0.01 of a point, and the wording should not claim a scope the
+  // denominator does not have. Counting the timeline is deliberate -- it is
+  // what `movement.panel_movement` counts, and the CLI's number is the one
+  // already published.
+  $('panelline').innerHTML =
+    `Across the whole <b>${esc(CONTEXT.panel.panel)}</b> panel: of the ` +
+    `<b>${fmt(p.uncertain)}</b> variants uncertain on <b>${esc(p.on)}</b>, ` +
+    `<b>${fmt(p.actionable)}</b> — <b>${p.actionable_pct}%</b> — are now pathogenic or benign. ` +
+    `Movement is concentrated, so no single gene is representative of the panel.`;
+  $('panelline').hidden = false;
 }
 
 function renderPolicyNote(){

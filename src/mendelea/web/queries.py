@@ -24,21 +24,35 @@ _DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
 def loaded_panel(connection) -> dict:
-    """Which panel the warehouse currently holds, and its extent."""
-    row = connection.execute(
-        "SELECT COUNT(DISTINCT allele_id), COUNT(DISTINCT gene) FROM assertion_span"
-    ).fetchone()
+    """Which panel the warehouse currently holds, and its extent.
+
+    A warehouse with no timeline at all is a state the demo meets in the
+    wild -- `serve` before `spans`, on a fresh clone -- so it answers
+    "nothing loaded" rather than raising. The page then says which command to
+    run; a 500 would have said "internal error".
+    """
+    try:
+        row = connection.execute(
+            "SELECT COUNT(DISTINCT allele_id), COUNT(DISTINCT gene) FROM assertion_span"
+        ).fetchone()
+    except duckdb.Error:
+        return {"panel": None, "alleles": 0, "genes": 0}
     return {"panel": spans.loaded_panel(connection), "alleles": row[0], "genes": row[1]}
 
 
-def release_dates(connection, panel: str) -> list[str]:
+def release_dates(connection, panel: str | None) -> list[str]:
     """Release dates ingested for this panel, oldest first. The slider stops.
 
     Delegates to `spans.release_dates`, which is the one place that knows the
     manifest table spans every panel ever ingested. Offering a date this panel
     was never observed on would present carried-forward state as a measurement.
     """
-    return spans.release_dates(connection, panel)
+    if panel is None:
+        return []
+    try:
+        return spans.release_dates(connection, panel)
+    except duckdb.Error:
+        return []
 
 
 def policy_events(connection) -> list[policy.PolicyEvent]:
@@ -78,45 +92,111 @@ def _suspect_cte(events: list[policy.PolicyEvent]) -> str:
     return "suspect(from_bucket, to_bucket, on_date) AS (VALUES " + ", ".join(rows) + ")"
 
 
-def genes(connection, allowed: set[str] | None = None) -> list[dict]:
-    """Panel genes, with how much has ever moved in each.
+# A rate computed from fewer VUS than this is not a headline. The README
+# quotes per-gene rates only above this bar for the same reason: the thinnest
+# declared gene in the 31-gene panel carries 91 uncertain variants at
+# baseline, and seven of them moving reads as "7.7%".
+HEADLINE_VUS_FLOOR = 200
+
+ACTIONABLE_BY_GENE_SQL = """
+WITH then_ AS (
+    SELECT allele_id, gene, bucket FROM assertion_span
+    WHERE valid_from <= CAST($on AS DATE) AND valid_to > CAST($on AS DATE)
+),
+now_ AS (
+    SELECT allele_id, bucket FROM assertion_span WHERE is_current
+)
+SELECT t.gene,
+       COUNT(*) FILTER (WHERE t.bucket = 'UNCERTAIN') AS vus,
+       COUNT(*) FILTER (WHERE t.bucket = 'UNCERTAIN' AND n.bucket IN
+              ('PATHOGENIC','LIKELY_PATHOGENIC','BENIGN','LIKELY_BENIGN')) AS actionable
+FROM then_ t JOIN now_ n USING (allele_id)
+GROUP BY t.gene
+"""
+
+
+def genes(connection, on: str | None, allowed: set[str] | None = None) -> list[dict]:
+    """Panel genes, ranked by the rate the product actually reports.
+
+    They were ranked by how many variants had ever held two classifications,
+    which is the movement the rest of the system is at pains not to quote: it
+    counts UNCERTAIN -> CONFLICTING, so the list led with BRCA2 at 28% beside
+    a headline of 4.6%, and put RAD51C sixth at 22% where 0.3% is actionable.
+    A picker that promises what the view does not deliver is worse than no
+    picker. The rate here is the one in the headline, measured from the same
+    baseline.
 
     `allowed` restricts the result to the panel's own gene list. Regions are
     fetched with 5 kb of flanking sequence, so ClinVar records belonging to
     neighbouring genes come along too -- 62 gene symbols appear in a 31-gene
     panel. Those neighbours are legitimately in the data but are not what the
-    panel is about, and being tiny they dominate any rate-based ordering: a
-    gene with 8 variants trivially shows "100% moved".
+    panel is about, and being tiny they dominate any rate-based ordering.
     """
-    # "Moved" means the allele has held two or more *real* classifications.
-    # Counting spans instead would count a variant merely appearing in ClinVar
-    # (ABSENT -> UNCERTAIN) as movement, which puts every gene above 90% and
-    # reads, to a laboratory, as "94% of these were reclassified". They were
-    # not. Only transitions between genuine classifications count.
-    rows = connection.execute(
-        """
-        WITH per_allele AS (
-            SELECT gene, allele_id,
-                   COUNT(DISTINCT bucket) FILTER (WHERE bucket <> 'ABSENT') AS states
-            FROM assertion_span
-            GROUP BY gene, allele_id
-        )
-        SELECT gene,
-               COUNT(*) AS alleles,
-               COUNT(*) FILTER (WHERE states > 1) AS moved
-        FROM per_allele
-        GROUP BY gene
-        """
-    ).fetchall()
+    if not on:
+        return []
+    try:
+        rows = connection.execute(ACTIONABLE_BY_GENE_SQL, {"on": on}).fetchall()
+    except duckdb.Error:
+        return []
 
     out = [
-        {"gene": r[0], "alleles": r[1], "moved": r[2],
-         "moved_pct": round(100.0 * r[2] / r[1], 1) if r[1] else 0.0}
+        {"gene": r[0], "vus": r[1], "actionable": r[2],
+         "actionable_pct": round(100.0 * r[2] / r[1], 1) if r[1] else 0.0,
+         "thin": r[1] < HEADLINE_VUS_FLOOR}
         for r in rows
         if allowed is None or r[0] in allowed
     ]
-    out.sort(key=lambda g: (-g["moved_pct"], -g["alleles"]))
+    # Thin genes stay selectable but sort below the ones whose rate carries
+    # weight, so the list opens on a story that survives being questioned.
+    out.sort(key=lambda g: (g["thin"], -g["actionable_pct"], -g["vus"]))
     return out
+
+
+PANEL_HEADLINE_SQL = """
+WITH then_ AS (
+    SELECT allele_id, bucket FROM assertion_span
+    WHERE valid_from <= CAST($on AS DATE) AND valid_to > CAST($on AS DATE)
+),
+now_ AS (
+    SELECT allele_id, bucket FROM assertion_span WHERE is_current
+)
+SELECT COUNT(*) FILTER (WHERE t.bucket = 'UNCERTAIN'),
+       COUNT(*) FILTER (WHERE t.bucket = 'UNCERTAIN' AND n.bucket IN
+              ('PATHOGENIC','LIKELY_PATHOGENIC')),
+       COUNT(*) FILTER (WHERE t.bucket = 'UNCERTAIN' AND n.bucket IN
+              ('BENIGN','LIKELY_BENIGN'))
+FROM then_ t JOIN now_ n USING (allele_id)
+"""
+
+
+def panel_headline(connection, on: str | None) -> dict | None:
+    """The whole panel's actionable rate: the Phase 0 gate, in the browser.
+
+    The demo could only answer "how much moved in this gene", and the first
+    question a laboratory asks is about its whole back catalogue. That number
+    lived in the CLI, which is no use in a meeting.
+
+    Counted over every gene in the timeline rather than the panel's declared
+    list, because that is what `movement.panel_movement` counts and the two
+    must not disagree in front of a customer. On the 31-gene panel the
+    flanking neighbours move it by 0.01 of a percentage point.
+    """
+    if not on:
+        return None
+    try:
+        vus, to_path, to_benign = connection.execute(
+            PANEL_HEADLINE_SQL, {"on": on}
+        ).fetchone()
+    except duckdb.Error:
+        return None
+    actionable = (to_path or 0) + (to_benign or 0)
+    vus = vus or 0
+    return {
+        "on": on,
+        "uncertain": vus,
+        "actionable": actionable,
+        "actionable_pct": round(100.0 * actionable / vus, 1) if vus else 0.0,
+    }
 
 
 VARIANTS_SQL = """

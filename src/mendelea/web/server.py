@@ -93,12 +93,18 @@ def make_handler(warehouse: Path):
             if "context" not in cache:
                 c = conn()
                 panel = queries.loaded_panel(c)
+                releases = queries.release_dates(c, panel["panel"])
+                # Both rates are anchored to the earliest release ingested for
+                # this panel: it is where the demo opens, and the only date
+                # every gene can be compared from.
+                baseline = releases[0] if releases else None
                 events = queries.policy_events(c)
                 cache["events"] = events
                 cache["context"] = {
                     "panel": panel,
-                    "releases": queries.release_dates(c, panel["panel"]),
-                    "genes": queries.genes(c, _panel_genes(panel["panel"])),
+                    "releases": releases,
+                    "genes": queries.genes(c, baseline, _panel_genes(panel["panel"])),
+                    "panel_headline": queries.panel_headline(c, baseline),
                     "policy_events": [asdict(e) for e in events],
                 }
             return cache["context"], cache["events"]

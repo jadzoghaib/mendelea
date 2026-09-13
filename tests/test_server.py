@@ -49,6 +49,35 @@ def test_context_reports_the_loaded_panel(base_url):
     assert payload["releases"] == ["2019-01-02", "2025-01-02"]
 
 
+def test_context_carries_the_panel_rate_and_ranked_genes(base_url):
+    """The demo must be able to answer the whole-panel question in the browser."""
+    payload = requests.get(f"{base_url}/api/context", timeout=10).json()
+    assert payload["panel_headline"]["uncertain"] == 2
+    assert payload["panel_headline"]["actionable"] == 1
+    assert payload["panel_headline"]["actionable_pct"] == 50.0
+    assert payload["genes"][0]["actionable_pct"] == 50.0
+    assert "moved_pct" not in payload["genes"][0]
+
+
+def test_context_survives_a_warehouse_with_no_timeline(tmp_path):
+    """`serve` before `spans` must produce guidance, not a 500."""
+    import duckdb
+    duckdb.connect(str(tmp_path / "bare.duckdb")).close()
+    server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(tmp_path / "bare.duckdb"))
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        r = requests.get(f"http://127.0.0.1:{server.server_address[1]}/api/context",
+                         timeout=10)
+        assert r.status_code == 200
+        payload = r.json()
+        assert payload["panel"]["panel"] is None
+        assert payload["releases"] == [] and payload["genes"] == []
+        assert payload["panel_headline"] is None
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
 def test_context_carries_detected_policy_events(base_url):
     """Half the corpus moved in one step here, which the heuristic must report."""
     payload = requests.get(f"{base_url}/api/context", timeout=10).json()

@@ -45,28 +45,113 @@ def test_release_dates_exclude_other_panels(warehouse):
     assert queries.release_dates(warehouse, "some-other-panel") == []
 
 
-def test_genes_rank_by_movement(warehouse):
-    genes = queries.genes(warehouse)
-    assert genes[0]["gene"] == "TESTGENE"
-    assert genes[0]["alleles"] == 4
+def test_genes_report_the_rate_the_headline_reports(warehouse):
+    """The picker's number must be the one the view delivers.
 
-
-def test_appearing_in_clinvar_does_not_count_as_movement(warehouse):
-    """Of four alleles only A2 was truly reclassified.
-
-    A1 never changed. A3 was retracted (real -> ABSENT). A4 merely appeared
-    (ABSENT -> BENIGN). Counting spans would call three of the four "moved"
-    and report 75%, which a laboratory reads as a reclassification rate.
+    Of three variants uncertain in 2019 only A2 is now actionable, so the
+    gene reads 33.3% — the same figure `headline` gives for that date.
     """
-    gene = queries.genes(warehouse)[0]
-    assert gene["moved"] == 1
-    assert gene["moved_pct"] == 25.0
+    gene = queries.genes(warehouse, "2019-01-02")[0]
+    assert gene["gene"] == "TESTGENE"
+    assert gene["vus"] == 3
+    assert gene["actionable"] == 1
+    assert gene["actionable_pct"] == pytest.approx(33.3, abs=0.1)
+    assert gene["actionable_pct"] == queries.headline(
+        warehouse, "TESTGENE", "2019-01-02")["actionable_pct"]
+
+
+def test_appearing_in_clinvar_does_not_inflate_the_rate(warehouse):
+    """A4 did not exist in 2019, so its benign classification is not movement.
+
+    Counting it would put the gene at 50% on a denominator that never
+    included it — which a laboratory reads as a reclassification rate.
+    """
+    gene = queries.genes(warehouse, "2019-01-02")[0]
+    assert gene["vus"] == 3          # A1, A2, A3 — never A4
+    assert gene["actionable"] == 1   # A2 only; A3 was retracted, not reclassified
 
 
 def test_genes_can_be_restricted_to_the_panel_list(warehouse):
     """5 kb flanking pulls in neighbouring genes; the picker should hide them."""
-    assert queries.genes(warehouse, allowed={"TESTGENE"})[0]["gene"] == "TESTGENE"
-    assert queries.genes(warehouse, allowed={"SOMETHING_ELSE"}) == []
+    assert queries.genes(warehouse, "2019-01-02", {"TESTGENE"})[0]["gene"] == "TESTGENE"
+    assert queries.genes(warehouse, "2019-01-02", {"SOMETHING_ELSE"}) == []
+
+
+def test_genes_without_a_baseline_date_are_empty(warehouse):
+    assert queries.genes(warehouse, None) == []
+
+
+@pytest.fixture
+def two_sizes(tmp_path):
+    """A big gene with a modest rate and a thin one with a spectacular rate."""
+    big_then = [(f"B{i}", "UNCERTAIN", 1, "BIGGENE") for i in range(250)]
+    big_now = ([(f"B{i}", "PATHOGENIC", 3, "BIGGENE") for i in range(25)]
+               + [(f"B{i}", "UNCERTAIN", 1, "BIGGENE") for i in range(25, 250)])
+    small_then = [(f"S{i}", "UNCERTAIN", 1, "SMALLGENE") for i in range(10)]
+    small_now = ([(f"S{i}", "PATHOGENIC", 3, "SMALLGENE") for i in range(5)]
+                 + [(f"S{i}", "UNCERTAIN", 1, "SMALLGENE") for i in range(5, 10)])
+    return build(tmp_path, [("2019-01-02", big_then + small_then),
+                            ("2025-01-02", big_now + small_now)])
+
+
+def test_a_thin_gene_does_not_lead_the_picker(two_sizes):
+    """50% of 10 variants is not a headline; 10% of 250 is.
+
+    Ranking on the rate alone would open the demo on a claim that falls over
+    the moment someone asks what it was measured on.
+    """
+    genes = queries.genes(two_sizes, "2019-01-02")
+    assert [g["gene"] for g in genes] == ["BIGGENE", "SMALLGENE"]
+    assert genes[0]["actionable_pct"] == 10.0 and genes[0]["thin"] is False
+    assert genes[1]["actionable_pct"] == 50.0 and genes[1]["thin"] is True
+
+
+def test_the_thin_gene_is_still_selectable(two_sizes):
+    """Ranked down, never removed: a laboratory may have reported in it."""
+    assert "SMALLGENE" in {g["gene"] for g in queries.genes(two_sizes, "2019-01-02")}
+
+
+# --------------------------------------------------------------------------
+# The panel-level rate: the question a laboratory asks first
+# --------------------------------------------------------------------------
+
+
+def test_panel_headline_spans_every_gene(two_sizes):
+    """30 of 260 uncertain variants became actionable, across both genes."""
+    p = queries.panel_headline(two_sizes, "2019-01-02")
+    assert p["uncertain"] == 260
+    assert p["actionable"] == 30
+    assert p["actionable_pct"] == pytest.approx(11.5, abs=0.1)
+
+
+def test_panel_headline_is_not_any_single_gene(two_sizes):
+    """The reason it is on screen: neither gene's rate is the panel's."""
+    genes = queries.genes(two_sizes, "2019-01-02")
+    panel = queries.panel_headline(two_sizes, "2019-01-02")["actionable_pct"]
+    assert panel not in {g["actionable_pct"] for g in genes}
+
+
+def test_panel_headline_without_a_baseline_is_none(warehouse):
+    assert queries.panel_headline(warehouse, None) is None
+
+
+# --------------------------------------------------------------------------
+# A warehouse with no timeline at all: `serve` before `spans`
+# --------------------------------------------------------------------------
+
+
+def test_a_warehouse_with_no_timeline_answers_rather_than_raises(tmp_path):
+    """The demo meets this on a fresh clone, and must say which command to run."""
+    import duckdb
+    empty = duckdb.connect(str(tmp_path / "empty.duckdb"))
+    try:
+        assert queries.loaded_panel(empty) == {"panel": None, "alleles": 0, "genes": 0}
+        assert queries.release_dates(empty, None) == []
+        assert queries.genes(empty, "2019-01-02") == []
+        assert queries.panel_headline(empty, "2019-01-02") is None
+        assert queries.policy_events(empty) == []
+    finally:
+        empty.close()
 
 
 def test_variants_show_past_and_present_together(warehouse):

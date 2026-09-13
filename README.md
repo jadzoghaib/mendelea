@@ -164,6 +164,24 @@ picked by eye. `OTHER` is hatched instead of coloured: a second grey cannot be
 told from the first, and a seventh hue would compete with a scale it is not
 part of.
 
+**The panel's own rate sits under the gene's.** The first question a
+laboratory asks is about its whole back catalogue, and that number lived only
+in the CLI, which is no use in a meeting. It is now on screen beside the
+per-gene headline — *of the 28,859 variants uncertain in 2018, 4.6% are now
+pathogenic or benign* — counted over the same timeline `mendelea spike`
+counts, so the demo and the command line cannot disagree in front of a
+customer.
+
+**The gene picker ranks by the rate the product reports.** It ranked by how
+many variants had ever held two classifications, which is precisely the
+movement the rest of the system is at pains not to quote: it counts
+`UNCERTAIN → CONFLICTING`, so the list opened on BRCA2 at 28% beside a
+headline of 4.6%, and put RAD51C sixth at 22% where 0.3% is actionable. A
+picker that promises what the view does not deliver is worse than no picker.
+Each entry now states the rate and the count it came from, and genes with
+fewer uncertain variants at baseline than the README quotes rates for sort
+below the ones whose numbers carry weight — still selectable, never leading.
+
 **The detected policy event is drawn, not just described.** The release step
 the sweep landed on is shaded and marked, and any row whose movement matches
 it is flagged `! relabelled` and sorted below genuine movement. A reader can
@@ -480,7 +498,7 @@ These are real and should be read before quoting any number this produces.
 pytest -q
 ```
 
-228 tests, offline by default. The ones worth reading first are `test_spans.py`
+237 tests, offline by default. The ones worth reading first are `test_spans.py`
 (the bitemporal invariants — every headline number is a query over that table)
 and the drift guard at the top of `test_clinvar.py`.
 
