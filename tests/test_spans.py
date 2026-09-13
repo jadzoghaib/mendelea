@@ -17,23 +17,29 @@ PANEL = "testpanel"
 
 
 def write_snapshot(root, release_date: str, rows: list[tuple]) -> SnapshotManifest:
-    """Write one synthetic snapshot: rows of (allele_id, bucket, stars)."""
+    """Write one synthetic snapshot.
+
+    Rows are (allele_id, bucket, stars), optionally with a fourth element
+    naming the gene; it defaults to TESTGENE so every existing caller is
+    unaffected. Two genes of different sizes are what the gene-ranking tests
+    need, and a panel really does hold them.
+    """
     records = [
         {
-            "allele_id": allele_id,
-            "variation_id": allele_id.replace("A", ""),
+            "allele_id": row[0],
+            "variation_id": row[0].replace("A", ""),
             "contig": "17",
             "pos": 1000 + index,
             "ref": "C",
             "alt": "T",
-            "gene": "TESTGENE",
-            "bucket": bucket,
-            "stars": stars,
-            "clnsig_raw": bucket.title(),
+            "gene": row[3] if len(row) > 3 else "TESTGENE",
+            "bucket": row[1],
+            "stars": row[2],
+            "clnsig_raw": row[1].title(),
             "clnrevstat_raw": "criteria_provided,_single_submitter",
             "condition": "Test condition",
         }
-        for index, (allele_id, bucket, stars) in enumerate(rows)
+        for index, row in enumerate(rows)
     ]
     path = snapshot_path(root, date.fromisoformat(release_date), PANEL)
     snapshot.write_snapshot(path, records)
