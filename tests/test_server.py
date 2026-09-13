@@ -13,6 +13,7 @@ import requests
 
 from mendelea import tenancy
 from mendelea.cases import model
+from mendelea.web import queries
 from mendelea.web import server as server_module
 from mendelea.web.server import make_handler
 from tests.test_policy import build
@@ -57,6 +58,9 @@ def test_context_carries_the_panel_rate_and_ranked_genes(base_url):
     assert payload["panel_headline"]["actionable_pct"] == 50.0
     assert payload["genes"][0]["actionable_pct"] == 50.0
     assert "moved_pct" not in payload["genes"][0]
+    # The page names this bar in the sentence describing the rate range, so
+    # it must not be a number hardcoded on the other side of the wire.
+    assert payload["headline_vus_floor"] == queries.HEADLINE_VUS_FLOOR
 
 
 def test_context_survives_a_warehouse_with_no_timeline(tmp_path):

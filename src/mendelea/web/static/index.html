@@ -493,27 +493,33 @@ async function refresh(geneChanged){
   $('chart').setAttribute('aria-valuenow', S.idx);
   $('chart').setAttribute('aria-valuetext', `${S.gene} on ${on}`);
   writeHash();
-  if (geneChanged || !COMPOSITION[S.gene]) await loadComposition();
+  const chartError = (geneChanged || !COMPOSITION[S.gene]) ? await loadComposition() : null;
   drawChart();
   // The open variant's track carries a "viewing <date>" marker, which would
   // otherwise keep pointing at the release we just left.
   if (TRACK) drawTrack(TRACK);
   await loadRows();
+  if (chartError) showError(chartError);
 }
 
 // ---- composition chart: the scrubber --------------------------------------------
 async function loadComposition(){
   const gene = S.gene;
-  // An empty series on failure, never a missing one: `drawChart` bails on a
-  // missing series and the previous gene's columns stay on screen under the
-  // new gene's name, which is the one outcome worse than a blank chart.
+  // Nothing is cached on failure. Caching an empty series would leave the
+  // scrubber permanently blank for that gene, because `refresh` only fetches
+  // when the entry is missing — and a stale entry is how the previous gene's
+  // columns ended up under the new gene's name.
   try {
     const d = await (await fetch(`/api/composition?gene=${encodeURIComponent(gene)}`)).json();
-    if (d.error){ COMPOSITION[gene] = []; return showError(d.error); }
+    if (d.error) throw new Error(d.error);
     COMPOSITION[gene] = d.composition;
+    return null;
   } catch (err) {
-    COMPOSITION[gene] = [];
-    showError('could not load the release history: ' + err.message);
+    delete COMPOSITION[gene];
+    // Returned, not shown: the row load that follows clears the banner on
+    // success, so the caller re-asserts this after it. A blank chart with no
+    // explanation is the failure mode that reads as "this gene has no data".
+    return `could not load the release history for ${gene}: ${err.message}`;
   }
 }
 
@@ -528,7 +534,14 @@ function nearest(e){
 
 function drawChart(){
   const svg = $('svg'), series = COMPOSITION[S.gene];
-  if (!series) return;
+  if (!series){
+    // No data for this gene, so show none of it. Leaving the previous
+    // render up would caption another gene's columns with this one's name.
+    svg.replaceChildren();
+    $('legend').innerHTML = '';
+    $('tip').hidden = true;
+    return;
+  }
   const W = svg.clientWidth || 800;
   const {H, ML, MR, MT, MB} = CHART;
   const sx = chartX(W);
@@ -622,7 +635,7 @@ function hover(i, e){
     document.querySelectorAll('#svg .col').forEach(g => g.classList.toggle('hover', +g.dataset.i === i));
   }
   const series = COMPOSITION[S.gene];
-  if (i < 0 || !series || !e) { tip.hidden = true; return; }
+  if (i < 0 || !series || !series[i] || !e) { tip.hidden = true; return; }
   const s = series[i];
   tip.innerHTML = `<div class="th"><span>${esc(s.on)}</span><span>${fmt(s.total)} variants</span></div>` +
     ORDER.filter(b => s.counts[b]).map(b =>
@@ -782,10 +795,14 @@ function renderPanelLine(){
   // The closing clause is measured, not asserted. It used to state that
   // movement is concentrated whatever the data said, which is the kind of
   // unbacked claim this tool exists to avoid making.
+  // The range is measured over the genes the ranking trusts, so the sentence
+  // names that bar. Quoting it as "across its genes" would be false the
+  // moment a thin gene's rate fell outside the range it describes.
   const rates = CONTEXT.genes.filter(g => !g.thin).map(g => g.actionable_pct);
   const spread = rates.length > 1
-    ? ` Across its genes the rate runs <b>${Math.min(...rates)}%</b> to ` +
-      `<b>${Math.max(...rates)}%</b>, so no single gene is representative of the panel.`
+    ? ` Across its genes with more than ${fmt(CONTEXT.headline_vus_floor)} uncertain ` +
+      `variants the rate runs <b>${Math.min(...rates)}%</b> to <b>${Math.max(...rates)}%</b>, ` +
+      `so no single gene is representative of the panel.`
     : '';
   $('panelline').innerHTML =
     `Across the whole <b>${esc(CONTEXT.panel.panel)}</b> panel: of the ` +
