@@ -311,6 +311,7 @@ const QUERY_OK = /[^A-Za-z0-9 ,_:./()'-]/g;
 let CONTEXT = null, RELEASES = [], EVENTS = [], COMPOSITION = {};
 const S = {gene:null, idx:0, moved:false, q:'', offset:0, allele:null};
 let seq = 0;          // request sequence: a slow early response must never overwrite a later one
+let refreshSeq = 0;   // the same, for a whole view: scrubbing outruns the fetches
 let hoverIdx = -1;
 let ROWS = [];        // the page on screen, so a variant link can be reopened from it
 let TRACK = null;     // the open variant's spans, for a redraw on resize
@@ -329,7 +330,21 @@ const el = (name, attrs = {}, text) => {
   if (text != null) node.textContent = text;
   return node;
 };
-function showError(message){ $('err').textContent = message; $('err').hidden = !message; }
+// The chart and the table load independently, so each owns a slot and the
+// banner is recomputed from both. A single slot took three attempts to get
+// right: whichever load finished last erased the other's message, a later
+// filter click wiped a still-valid explanation, and a superseded refresh
+// could paint a dead gene's error over a healthy view.
+const ERRORS = {page: null, chart: null, rows: null};
+
+function setError(slot, message){
+  ERRORS[slot] = message || null;
+  const active = [ERRORS.page, ERRORS.chart, ERRORS.rows].filter(Boolean);
+  $('err').textContent = active.join(' · ');
+  $('err').hidden = active.length === 0;
+}
+
+const showError = message => setError('page', message);
 
 // x scale shared by the chart and the variant track: proportional to time,
 // so a year of silence looks like a year and a bimonthly cluster looks dense.
@@ -485,6 +500,7 @@ function select(i){
 
 // One place that re-renders everything downstream of (gene, release).
 async function refresh(geneChanged){
+  const mine = ++refreshSeq;
   const on = RELEASES[S.idx];
   $('date').textContent = on;
   $('thAsOf').textContent = 'as of ' + on;
@@ -494,12 +510,16 @@ async function refresh(geneChanged){
   $('chart').setAttribute('aria-valuetext', `${S.gene} on ${on}`);
   writeHash();
   const chartError = (geneChanged || !COMPOSITION[S.gene]) ? await loadComposition() : null;
+  // Scrubbing outruns the fetches. A refresh overtaken while its composition
+  // was in flight must paint nothing at all -- neither a chart nor an error
+  // belonging to a gene the reader has already left.
+  if (mine !== refreshSeq) return;
+  setError('chart', chartError);
   drawChart();
   // The open variant's track carries a "viewing <date>" marker, which would
   // otherwise keep pointing at the release we just left.
   if (TRACK) drawTrack(TRACK);
   await loadRows();
-  if (chartError) showError(chartError);
 }
 
 // ---- composition chart: the scrubber --------------------------------------------
@@ -660,13 +680,18 @@ async function loadRows(){
   try {
     d = await (await fetch('/api/variants?' + p)).json();
   } catch (err) {
-    if (my === seq) { document.body.classList.remove('loading'); showError('the server did not answer: ' + err.message); }
+    if (my === seq) {
+      document.body.classList.remove('loading');
+      setError('rows', 'the server did not answer: ' + err.message);
+    }
     return;
   }
   if (my !== seq) return;                       // superseded while in flight
   document.body.classList.remove('loading');
-  if (d.error) return showError(d.error);
-  showError('');
+  // Only this load's own slot: a chart that failed keeps saying so through
+  // a filter, a search or a page turn, all of which land here.
+  if (d.error) return setError('rows', d.error);
+  setError('rows', null);
   renderHeadline(d.headline, on, gene);
   renderRows(d, on);
 }
