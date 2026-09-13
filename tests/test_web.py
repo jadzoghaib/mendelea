@@ -1,7 +1,9 @@
 """Queries behind the time machine."""
 
+import duckdb
 import pytest
 
+from mendelea.evidence import spans
 from mendelea.reports.policy import PolicyEvent
 from mendelea.web import queries
 from tests.test_policy import build
@@ -140,9 +142,42 @@ def test_panel_headline_without_a_baseline_is_none(warehouse):
 # --------------------------------------------------------------------------
 
 
+def test_a_recorded_release_whose_file_is_missing_does_not_hide_the_timeline(tmp_path):
+    """`spans.build` records every manifest but skips missing Parquet files.
+
+    The earliest release then has no spans covering it, and anchoring the
+    gene ranking there returned nothing — which the page reads as "no
+    timeline at all", hiding the releases that are perfectly intact.
+    """
+    from datetime import date
+    from mendelea.evidence.snapshot import snapshot_path
+    from tests.test_spans import PANEL, write_snapshot
+
+    root = tmp_path / "snapshots"
+    manifests = [write_snapshot(root, "2019-01-02", [("A1", "UNCERTAIN", 1)]),
+                 write_snapshot(root, "2025-01-02", [("A1", "PATHOGENIC", 3)])]
+    snapshot_path(root, date(2019, 1, 2), PANEL).unlink()   # the half-synced case
+
+    connection = duckdb.connect(str(tmp_path / "gap.duckdb"))
+    spans.build(connection, root, manifests, PANEL)
+    try:
+        releases = queries.release_dates(connection, PANEL)
+        assert releases == ["2019-01-02", "2025-01-02"]      # the slider still stops there
+        assert queries.genes(connection, releases[0]) == []  # nothing covers that date
+        start = queries.timeline_start(connection)
+        assert start == "2025-01-02"
+        assert [g["gene"] for g in queries.genes(connection, start)] == ["TESTGENE"]
+        assert queries.panel_headline(connection, start) is not None
+    finally:
+        connection.close()
+
+
+def test_timeline_start_is_the_first_date_with_data(warehouse):
+    assert queries.timeline_start(warehouse) == "2019-01-02"
+
+
 def test_a_warehouse_with_no_timeline_answers_rather_than_raises(tmp_path):
     """The demo meets this on a fresh clone, and must say which command to run."""
-    import duckdb
     empty = duckdb.connect(str(tmp_path / "empty.duckdb"))
     try:
         assert queries.loaded_panel(empty) == {"panel": None, "alleles": 0, "genes": 0}
@@ -150,8 +185,21 @@ def test_a_warehouse_with_no_timeline_answers_rather_than_raises(tmp_path):
         assert queries.genes(empty, "2019-01-02") == []
         assert queries.panel_headline(empty, "2019-01-02") is None
         assert queries.policy_events(empty) == []
+        assert queries.timeline_start(empty) is None
     finally:
         empty.close()
+
+
+def test_a_broken_detector_is_not_silently_swallowed(warehouse, monkeypatch):
+    """Tolerating a missing table must not tolerate a broken query.
+
+    Catching every DuckDB error here would turn a regression in DETECT_SQL
+    into a policy feature that quietly stops flagging anything.
+    """
+    from mendelea.reports import policy as policy_module
+    monkeypatch.setattr(policy_module, "DETECT_SQL", "SELECT nonexistent_column")
+    with pytest.raises(duckdb.Error):
+        queries.policy_events(warehouse)
 
 
 def test_variants_show_past_and_present_together(warehouse):
@@ -205,6 +253,29 @@ def test_numeric_search_matches_the_variation_id(warehouse):
 def test_text_search_matches_the_condition(warehouse):
     assert queries.variants_on(warehouse, "TESTGENE", "2019-01-02", q="test cond")["total"] == 3
     assert queries.variants_on(warehouse, "TESTGENE", "2019-01-02", q="nothing")["total"] == 0
+
+
+def test_search_does_not_treat_underscore_as_a_wildcard(tmp_path):
+    """`_` is a single-character LIKE wildcard, and a condition may contain one.
+
+    Unescaped, searching the exact text of one condition also returns every
+    other condition that differs from it by a character.
+    """
+    conn = build(tmp_path, [("2019-01-02", [
+        ("A1", "UNCERTAIN", 1, "TESTGENE", "Lynch_syndrome"),
+        ("A2", "UNCERTAIN", 1, "TESTGENE", "LynchXsyndrome"),
+    ])])
+    page = queries.variants_on(conn, "TESTGENE", "2019-01-02", q="Lynch_syndrome")
+    assert page["total"] == 1
+    assert page["rows"][0]["allele_id"] == "A1"
+
+
+def test_search_does_not_treat_percent_as_a_wildcard(tmp_path):
+    conn = build(tmp_path, [("2019-01-02", [
+        ("A1", "UNCERTAIN", 1, "TESTGENE", "100% penetrance"),
+        ("A2", "UNCERTAIN", 1, "TESTGENE", "reduced penetrance"),
+    ])])
+    assert queries.variants_on(conn, "TESTGENE", "2019-01-02", q="100%")["total"] == 1
 
 
 # --------------------------------------------------------------------------

@@ -41,7 +41,7 @@
          padding:5px 10px;font-family:var(--mono);font-size:12.5px;width:250px}
   input[type=search]::placeholder{color:var(--ink-faint)}
 
-  header{display:flex;align-items:baseline;gap:16px;padding:12px 22px;
+  header{display:flex;align-items:baseline;gap:8px 16px;padding:12px 22px;flex-wrap:wrap;
          border-bottom:1px solid var(--line);background:var(--panel)}
   .brand{font-weight:600;letter-spacing:.14em;font-size:13px}
   .sub{color:var(--ink-faint);font-size:12px;font-family:var(--mono)}
@@ -61,7 +61,11 @@
         min-width:148px;text-align:center}
   .hint{color:var(--ink-faint);font-size:12px}
 
-  .chart{position:relative;margin:2px 0 6px;border-radius:4px;cursor:ew-resize;user-select:none}
+  /* pan-y, not auto: the horizontal drag scrubs releases and the browser
+     would otherwise claim the gesture and cancel our pointer events, while
+     a vertical swipe must still scroll the page. */
+  .chart{position:relative;margin:2px 0 6px;border-radius:4px;cursor:ew-resize;user-select:none;
+         touch-action:pan-y}
   .chart svg{display:block;width:100%;height:210px;overflow:visible}
   .chart text{font-family:var(--mono);font-size:10.5px;fill:var(--ink-faint)}
   .chart .grid{stroke:var(--line-soft);stroke-width:1}
@@ -491,16 +495,26 @@ async function refresh(geneChanged){
   writeHash();
   if (geneChanged || !COMPOSITION[S.gene]) await loadComposition();
   drawChart();
+  // The open variant's track carries a "viewing <date>" marker, which would
+  // otherwise keep pointing at the release we just left.
+  if (TRACK) drawTrack(TRACK);
   await loadRows();
 }
 
 // ---- composition chart: the scrubber --------------------------------------------
 async function loadComposition(){
   const gene = S.gene;
-  const r = await fetch(`/api/composition?gene=${encodeURIComponent(gene)}`);
-  const d = await r.json();
-  if (d.error) return showError(d.error);
-  COMPOSITION[gene] = d.composition;
+  // An empty series on failure, never a missing one: `drawChart` bails on a
+  // missing series and the previous gene's columns stay on screen under the
+  // new gene's name, which is the one outcome worse than a blank chart.
+  try {
+    const d = await (await fetch(`/api/composition?gene=${encodeURIComponent(gene)}`)).json();
+    if (d.error){ COMPOSITION[gene] = []; return showError(d.error); }
+    COMPOSITION[gene] = d.composition;
+  } catch (err) {
+    COMPOSITION[gene] = [];
+    showError('could not load the release history: ' + err.message);
+  }
 }
 
 function nearest(e){
@@ -694,6 +708,10 @@ async function openVariant(v, tr){
   S.allele = v.allele_id; writeHash();
   document.querySelectorAll('#rows tr').forEach(r => r.classList.toggle('sel', r.dataset.id === v.allele_id));
   const d = await (await fetch(`/api/timeline?allele_id=${encodeURIComponent(v.allele_id)}`)).json();
+  // Two quick clicks race, and the slower response must not win: it would
+  // leave the pane describing one variant while the selection, the URL and
+  // the highlighted row all name another.
+  if (S.allele !== v.allele_id) return;
   if (d.error) return showError(d.error);
   const steps = d.timeline;
   const label = v.contig ? `${v.gene} ${v.contig}:${v.pos} ${v.ref}>${v.alt}` : v.allele_id;
@@ -761,11 +779,19 @@ function renderPanelLine(){
   // denominator does not have. Counting the timeline is deliberate -- it is
   // what `movement.panel_movement` counts, and the CLI's number is the one
   // already published.
+  // The closing clause is measured, not asserted. It used to state that
+  // movement is concentrated whatever the data said, which is the kind of
+  // unbacked claim this tool exists to avoid making.
+  const rates = CONTEXT.genes.filter(g => !g.thin).map(g => g.actionable_pct);
+  const spread = rates.length > 1
+    ? ` Across its genes the rate runs <b>${Math.min(...rates)}%</b> to ` +
+      `<b>${Math.max(...rates)}%</b>, so no single gene is representative of the panel.`
+    : '';
   $('panelline').innerHTML =
     `Across the whole <b>${esc(CONTEXT.panel.panel)}</b> panel: of the ` +
     `<b>${fmt(p.uncertain)}</b> variants uncertain on <b>${esc(p.on)}</b>, ` +
-    `<b>${fmt(p.actionable)}</b> — <b>${p.actionable_pct}%</b> — are now pathogenic or benign. ` +
-    `Movement is concentrated, so no single gene is representative of the panel.`;
+    `<b>${fmt(p.actionable)}</b> — <b>${p.actionable_pct}%</b> — are now pathogenic or benign.` +
+    spread;
   $('panelline').hidden = false;
 }
 

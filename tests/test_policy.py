@@ -5,8 +5,8 @@ how it aggregates is not a laboratory's variants changing meaning. Reporting
 the former as the latter sends a customer to re-review thousands of cases for
 nothing.
 
-Modelled on the real event found in ClinVar: 6,107 variants moved
-UNCERTAIN -> CONFLICTING in one release step, 14.5% of the corpus, against
+Modelled on the real event found in ClinVar: 5,843 variants moved
+UNCERTAIN -> CONFLICTING in one release step, 13.3% of the corpus, against
 1-3% in adjacent steps.
 """
 

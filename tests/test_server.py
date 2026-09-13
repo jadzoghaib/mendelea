@@ -116,6 +116,15 @@ def test_moved_filter_and_search_reach_the_query(base_url):
         params={"gene": "TESTGENE", "on": "2019-01-02", "q": "Test"}, timeout=10,
     ).json()
     assert found["total"] == 2
+    # Every fixture row shares one condition, so a match proves nothing on its
+    # own -- a filter that never ran would return the same 2. The miss is the
+    # half of the pair that can fail.
+    missed = requests.get(
+        f"{base_url}/api/variants",
+        params={"gene": "TESTGENE", "on": "2019-01-02", "q": "no such condition"},
+        timeout=10,
+    ).json()
+    assert missed["total"] == 0 and missed["variants"] == []
 
 
 def test_composition_endpoint(base_url):

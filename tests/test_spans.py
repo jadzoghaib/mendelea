@@ -19,10 +19,11 @@ PANEL = "testpanel"
 def write_snapshot(root, release_date: str, rows: list[tuple]) -> SnapshotManifest:
     """Write one synthetic snapshot.
 
-    Rows are (allele_id, bucket, stars), optionally with a fourth element
-    naming the gene; it defaults to TESTGENE so every existing caller is
-    unaffected. Two genes of different sizes are what the gene-ranking tests
-    need, and a panel really does hold them.
+    Rows are (allele_id, bucket, stars), optionally followed by a gene and a
+    condition; both default so every existing caller is unaffected. Two genes
+    of different sizes are what the gene-ranking tests need, and distinct
+    condition text is what stops a search test from passing on a filter that
+    never ran.
     """
     records = [
         {
@@ -37,7 +38,7 @@ def write_snapshot(root, release_date: str, rows: list[tuple]) -> SnapshotManife
             "stars": row[2],
             "clnsig_raw": row[1].title(),
             "clnrevstat_raw": "criteria_provided,_single_submitter",
-            "condition": "Test condition",
+            "condition": row[4] if len(row) > 4 else "Test condition",
         }
         for index, row in enumerate(rows)
     ]

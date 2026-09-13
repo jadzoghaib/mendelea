@@ -94,10 +94,13 @@ def make_handler(warehouse: Path):
                 c = conn()
                 panel = queries.loaded_panel(c)
                 releases = queries.release_dates(c, panel["panel"])
-                # Both rates are anchored to the earliest release ingested for
-                # this panel: it is where the demo opens, and the only date
-                # every gene can be compared from.
-                baseline = releases[0] if releases else None
+                # Both rates are anchored to the earliest date the timeline
+                # holds data for, which is normally the earliest release and
+                # differs from it only when a snapshot is recorded but its
+                # file is missing. Using the release date there ranked every
+                # gene off an empty baseline and the page called that "no
+                # timeline".
+                baseline = queries.timeline_start(c)
                 events = queries.policy_events(c)
                 cache["events"] = events
                 cache["context"] = {
