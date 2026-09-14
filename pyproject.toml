@@ -27,7 +27,11 @@ mendelea = ["web/static/*.html"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
-addopts = "-q"
+# Offline by default. The live tests reach NCBI, take half a minute and fail
+# when the endpoint is down, none of which should happen to someone who just
+# typed `pytest`. Ask for them explicitly with `pytest -m network`, which
+# overrides this.
+addopts = "-q -m 'not network'"
 markers = [
-    "network: hits the live NCBI endpoint; deselect with -m 'not network'",
+    "network: hits the live NCBI endpoint; run with -m network",
 ]

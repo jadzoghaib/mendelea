@@ -312,6 +312,7 @@ let CONTEXT = null, RELEASES = [], EVENTS = [], COMPOSITION = {};
 const S = {gene:null, idx:0, moved:false, q:'', offset:0, allele:null};
 let seq = 0;          // request sequence: a slow early response must never overwrite a later one
 let refreshSeq = 0;   // the same, for a whole view: scrubbing outruns the fetches
+let variantSeq = 0;   // and again for the pane: the same variant can be opened twice
 let hoverIdx = -1;
 let ROWS = [];        // the page on screen, so a variant link can be reopened from it
 let TRACK = null;     // the open variant's spans, for a redraw on resize
@@ -761,13 +762,16 @@ function renderRows(d, on){
 
 // ---- variant pane: one allele's whole history ------------------------------------
 async function openVariant(v, tr){
+  const mine = ++variantSeq;
   S.allele = v.allele_id; writeHash();
   document.querySelectorAll('#rows tr').forEach(r => r.classList.toggle('sel', r.dataset.id === v.allele_id));
   const d = await (await fetch(`/api/timeline?allele_id=${encodeURIComponent(v.allele_id)}`)).json();
-  // Two quick clicks race, and the slower response must not win: it would
+  // A sequence, not just the allele: two loads for the *same* variant can
+  // overlap, and comparing ids alone let an older success clear the newer
+  // load's error. The slower response must never win either way -- it would
   // leave the pane describing one variant while the selection, the URL and
   // the highlighted row all name another.
-  if (S.allele !== v.allele_id) return;
+  if (mine !== variantSeq || S.allele !== v.allele_id) return;
   if (d.error) return setError('variant', d.error);
   setError('variant', null);
   const steps = d.timeline;
