@@ -1,0 +1,34 @@
+# The build context should be the source and one exported warehouse, nothing
+# else. Without this, Docker uploads the git history and every screenshot.
+.git/
+.github/
+.pytest_cache/
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+
+docs/
+tests/
+CLAUDE.md
+fly.toml
+Dockerfile
+.dockerignore
+
+# Every DuckDB file except the exported artefact the Dockerfile copies in.
+# The working warehouse is 308 MB of build intermediates and both private
+# planes, and it must never end up in an image.
+*.duckdb
+*.duckdb.wal
+!mendelea-public.duckdb
+
+# Evidence snapshots are only needed to rebuild spans, never to serve them.
+*.parquet
+*.parquet.partial
+*.manifest.json
+*.csv
+*.json
+!panels/*.json

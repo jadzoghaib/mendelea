@@ -35,6 +35,8 @@ import secrets
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
+import duckdb
+
 TOKEN_PREFIX = "mdl"
 
 SCHEMA_DDL = """
@@ -125,6 +127,12 @@ def verify(connection, presented: str | None) -> str | None:
     Returns None for every failure mode rather than distinguishing them: a
     caller learns only that the credential did not work, never whether a
     token_id exists or has been revoked.
+
+    A warehouse with no token table is one of those failure modes, not an
+    error. The public build ships exactly that -- the evidence tables and
+    nothing else -- so the case endpoint there answers 401 like any other
+    bad credential instead of 500ing about a missing catalog entry. No
+    tenant table is the strongest possible "this token is not valid here".
     """
     if not presented:
         return None
@@ -134,11 +142,14 @@ def verify(connection, presented: str | None) -> str | None:
         return None
     _, token_id, secret = parts
 
-    row = connection.execute(
-        "SELECT tenant_id, secret_sha256, revoked_at FROM tenant_token "
-        "WHERE token_id = ?",
-        [token_id],
-    ).fetchone()
+    try:
+        row = connection.execute(
+            "SELECT tenant_id, secret_sha256, revoked_at FROM tenant_token "
+            "WHERE token_id = ?",
+            [token_id],
+        ).fetchone()
+    except duckdb.CatalogException:
+        return None
     if not row:
         return None
 

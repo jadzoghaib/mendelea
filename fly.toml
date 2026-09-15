@@ -1,0 +1,45 @@
+# Fly.io deployment for the public evidence demo.
+#
+#   mendelea export-public --out mendelea-public.duckdb
+#   fly launch --no-deploy --copy-config      # first time only
+#   fly deploy
+#
+# Madrid because the audience is European laboratories and the round trip
+# matters more than anything else about the placement. There is no volume and
+# no secret: the container is stateless and the data it serves is public
+# ClinVar, so losing the machine loses nothing but uptime.
+
+app = "mendelea"
+primary_region = "mad"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  # Fly terminates TLS and proxies, so every request arrives from the same
+  # edge address. Without naming the header the limiter would throttle every
+  # visitor as one client; trusting it anywhere else would let a caller mint
+  # a fresh quota per request by setting it themselves.
+  MENDELEA_TRUSTED_IP_HEADER = "Fly-Client-IP"
+  MENDELEA_RATE_PER_MINUTE = "120"
+  MENDELEA_RATE_BURST = "40"
+
+[http_service]
+  internal_port = 8000
+  force_https = true
+  # Scale to zero. The demo is shown in meetings, not hammered continuously,
+  # and a cold start is a container with a 58 MB file in it.
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 0
+
+  [[http_service.checks]]
+    grace_period = "10s"
+    interval = "30s"
+    method = "GET"
+    path = "/health"
+    timeout = "5s"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"

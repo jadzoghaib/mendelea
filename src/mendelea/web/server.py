@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import threading
 from dataclasses import asdict
@@ -29,9 +30,35 @@ from .. import config, tenancy
 from ..cases import report as case_report
 from ..reports import policy
 from . import queries
+from .ratelimit import RateLimiter
 
 STATIC = Path(__file__).resolve().parent / "static"
 log = logging.getLogger("mendelea.web")
+
+# Nothing here loads a script, a style or an image from anywhere else, so the
+# policy can say exactly that. The two inline allowances are the page's own
+# <style> and <script>; ClinVar is reached by link, which is a navigation and
+# needs no directive. The value of this is not the inline blocks it cannot
+# stop -- it is that injected markup has nowhere to send anything.
+CSP = (
+    "default-src 'self'; "
+    "style-src 'self' 'unsafe-inline'; "
+    "script-src 'self' 'unsafe-inline'; "
+    "img-src 'self' data:; "
+    "connect-src 'self'; "
+    "form-action 'none'; "
+    "frame-ancestors 'none'; "
+    "base-uri 'none'"
+)
+
+# A proxy's address is the same for every visitor, so reading the socket
+# behind one would throttle the world as a single client. Reading a forwarded
+# header when there is no proxy is worse: anyone can set it and get their own
+# fresh bucket per request. So it is opt-in, and names the header the
+# deployment actually trusts (Fly-Client-IP on Fly, X-Forwarded-For elsewhere).
+TRUSTED_IP_HEADER = os.environ.get("MENDELEA_TRUSTED_IP_HEADER", "")
+RATE_PER_MINUTE = float(os.environ.get("MENDELEA_RATE_PER_MINUTE", "120"))
+RATE_BURST = int(os.environ.get("MENDELEA_RATE_BURST", "40"))
 
 # Gene symbols reach SQL as a bound parameter, but bound or not we only ever
 # want to see something that looks like a gene symbol.
@@ -115,6 +142,22 @@ def make_handler(warehouse: Path):
                 }
             return cache["context"], cache["events"]
 
+    limiter = RateLimiter(per_minute=RATE_PER_MINUTE, burst=RATE_BURST)
+
+    def health() -> dict:
+        """Cheap enough for a probe every few seconds, real enough to mean something.
+
+        Deliberately not `context()`: that builds the gene ranking and runs
+        the policy scan, which is most of a second on a cold process. A probe
+        that expensive would be the thing that made the container look
+        unhealthy. This asks the database one question instead.
+        """
+        try:
+            loaded = queries.timeline_start(conn()) is not None
+        except Exception:  # noqa: BLE001 - a probe reports, it does not raise
+            return {"status": "degraded", "timeline": False}
+        return {"status": "ok" if loaded else "degraded", "timeline": loaded}
+
     def require(value: str | None, pattern: re.Pattern, name: str) -> str:
         if not value or not pattern.match(value):
             raise ApiError(400, f"invalid or missing {name}")
@@ -142,10 +185,24 @@ def make_handler(warehouse: Path):
         def log_message(self, *args):  # noqa: A003 - quiet by default
             pass
 
-        def _send(self, status: int, body: bytes, content_type: str):
+        def _client(self) -> str:
+            if TRUSTED_IP_HEADER:
+                forwarded = self.headers.get(TRUSTED_IP_HEADER, "")
+                if forwarded:
+                    # X-Forwarded-For is a chain; the client is the first hop.
+                    return forwarded.split(",")[0].strip()
+            return self.client_address[0]
+
+        def _send(self, status: int, body: bytes, content_type: str,
+                  extra: dict[str, str] | None = None):
             self.send_response(status)
             self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(body)))
+            self.send_header("Content-Security-Policy", CSP)
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Referrer-Policy", "no-referrer")
+            for name, value in (extra or {}).items():
+                self.send_header(name, value)
             # Never cache. Keep-alive plus a Content-Length and no cache
             # directive is enough for Chrome to reuse a stale page heuristically
             # -- which it did during development, serving the previous build of
@@ -155,8 +212,8 @@ def make_handler(warehouse: Path):
             self.end_headers()
             self.wfile.write(body)
 
-        def _json(self, payload, status: int = 200):
-            self._send(status, json.dumps(payload).encode(), "application/json")
+        def _json(self, payload, status: int = 200, extra=None):
+            self._send(status, json.dumps(payload).encode(), "application/json", extra)
 
         def _authenticate(self) -> str:
             """Resolve the bearer token to a tenant, or refuse.
@@ -178,6 +235,18 @@ def make_handler(warehouse: Path):
             one = lambda key: (query.get(key) or [None])[0]  # noqa: E731
 
             try:
+                # Before anything else, and before the probe, which a platform
+                # polls far more often than any human browses.
+                if parsed.path == "/health":
+                    return self._json(health())
+
+                wait = limiter.check(self._client())
+                if wait:
+                    return self._json(
+                        {"error": "too many requests"}, 429,
+                        {"Retry-After": str(max(1, round(wait)))},
+                    )
+
                 if parsed.path in ("/", "/index.html"):
                     return self._send(
                         200, (STATIC / "index.html").read_bytes(), "text/html; charset=utf-8"

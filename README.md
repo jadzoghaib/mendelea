@@ -23,7 +23,7 @@
   <img alt="Python 3.11+" src="https://img.shields.io/badge/python-3.11%2B-1f2937?style=flat-square&logo=python&logoColor=7fd6c2">
   <img alt="DuckDB" src="https://img.shields.io/badge/duckdb-in--process-1f2937?style=flat-square&logo=duckdb&logoColor=7fd6c2">
   <img alt="Runtime dependencies: 2" src="https://img.shields.io/badge/runtime%20deps-2-1f2937?style=flat-square">
-  <img alt="Tests 242 offline plus 6 live" src="https://img.shields.io/badge/tests-242%20offline%20%2B%206%20live-1f2937?style=flat-square&logo=pytest&logoColor=1fa98a">
+  <img alt="Tests 256 offline plus 6 live" src="https://img.shields.io/badge/tests-256%20offline%20%2B%206%20live-1f2937?style=flat-square&logo=pytest&logoColor=1fa98a">
   <img alt="Phase 0 gate: passed" src="https://img.shields.io/badge/phase%200%20gate-passed%204.6%25-1f2937?style=flat-square">
   <img alt="Research use only" src="https://img.shields.io/badge/research%20use%20only-not%20a%20medical%20device-1f2937?style=flat-square&logoColor=d94c4c">
 </p>
@@ -308,10 +308,51 @@ recompute the whole chain. Per-entry signing needs an identity provider and is P
 
 ---
 
+## Deploying it
+
+The public demo is **one stateless container holding one read-only file**. No database
+service, no volume, no object storage — the web layer never reads a Parquet file, it only
+queries DuckDB tables, so the whole deployable artefact is the timeline itself.
+
+```powershell
+mendelea export-public --out mendelea-public.duckdb   # 58 MB, from a 294 MB warehouse
+docker build -t mendelea .
+docker run --rm -p 8000:8000 mendelea
+```
+
+`export-public` copies the evidence tables and nothing else. It leaves behind the build
+intermediates, which are four times the size of the timeline they produce, and both private
+planes. **A build that does not contain `case_variant`, `decision_ledger` or `tenant_token`
+cannot leak them**, whatever the auth layer does, and that is a far easier thing to say to a
+hospital's security review than "we checked the queries". A valid token from a real install
+gets a 401 against the public build, because the table it would be checked against is not there.
+
+Fly is configured in [`fly.toml`](fly.toml) — Madrid, scale to zero, TLS terminated at the edge,
+health checks against `/health`. Hugging Face Spaces works from the same Dockerfile and is free,
+but it sleeps when idle and the URL reads as a research demo rather than a product.
+
+Three things the demo needed before it could face the internet, all now in place:
+
+- **A rate limiter.** Every endpoint is read-only, so the risk was never damage, it was cost:
+  one `/api/variants` call scans the span table. A token bucket per client, in-process, with the
+  client table capped so that rotating source addresses cannot turn the limiter into the memory
+  exhaustion it prevents.
+- **A cheap health probe.** `/health` asks the database one question rather than building the
+  gene ranking and running the policy scan, which is most of a second on a cold process. A probe
+  that expensive is the thing that makes a container look unhealthy.
+- **Headers that assume hostility.** The page loads no script, style or image from anywhere else,
+  so the content security policy says exactly that. Injected markup has nowhere to send anything.
+
+Behind a proxy, set `MENDELEA_TRUSTED_IP_HEADER` to the header that proxy actually sets
+(`Fly-Client-IP` on Fly). Unset, the limiter reads the socket, which behind a proxy is one
+address for the whole world; trusted blindly, anyone could mint a fresh quota per request.
+
+---
+
 ## Verification
 
 ```powershell
-pytest                      # 242 offline, 6 live deselected
+pytest                      # 256 offline, 6 live deselected
 pytest -m network           # the live path: a real ingest, checked against ClinVar's API
 mendelea provenance --panel hereditary-cancer   # checksum + reproducibility audit
 ```

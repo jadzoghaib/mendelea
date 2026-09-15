@@ -235,6 +235,54 @@ def build(connection, snapshot_root: Path, manifests: list[SnapshotManifest],
     return connection.execute("SELECT COUNT(*) FROM assertion_span").fetchone()[0]
 
 
+# What a read-only public deployment serves, and nothing else. `assertion_raw`
+# and `allele_dim` are build intermediates; the case, decision and tenant
+# tables are the private planes. Leaving the private tables out is not
+# tidiness -- a build that does not contain them cannot leak them, whatever
+# the auth layer does, and that is a far easier claim to make to a hospital's
+# security review than "we checked the queries".
+PUBLIC_TABLES = ("assertion_span", "snapshot_manifest", "assertion_dense")
+
+
+def export_public(source: Path, target: Path) -> dict[str, int]:
+    """Copy just the public evidence tables into a fresh, smaller warehouse.
+
+    Returns the row count written per table. The result is what ships in a
+    container image: on the 31-gene panel it is 58 MB against the 308 MB
+    working warehouse, because the build intermediates are four times the
+    size of the timeline they produce.
+    """
+    import duckdb
+
+    if not source.exists():
+        raise FileNotFoundError(f"no warehouse at {source}")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    partial = target.with_suffix(target.suffix + ".partial")
+    partial.unlink(missing_ok=True)
+
+    counts: dict[str, int] = {}
+    connection = duckdb.connect(str(partial))
+    try:
+        # ATTACH takes no bound parameter, so the path is a literal. It comes
+        # from config rather than a request, and the doubled quote is the
+        # standard escape -- a directory name with an apostrophe in it is not
+        # exotic on a desktop, which is where this runs.
+        literal = as_posix(source).replace("'", "''")
+        connection.execute(f"ATTACH '{literal}' AS src (READ_ONLY)")
+        for table in PUBLIC_TABLES:
+            connection.execute(f"CREATE TABLE {table} AS SELECT * FROM src.{table}")
+            counts[table] = connection.execute(
+                f"SELECT COUNT(*) FROM {table}"
+            ).fetchone()[0]
+        connection.execute("DETACH src")
+    finally:
+        connection.close()
+
+    target.unlink(missing_ok=True)
+    partial.replace(target)   # atomic, so a killed export leaves no half file
+    return counts
+
+
 def loaded_panel(connection) -> str | None:
     """Which panel `assertion_span` currently holds.
 
