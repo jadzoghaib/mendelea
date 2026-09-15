@@ -29,6 +29,13 @@ class RateLimiter:
 
     def __init__(self, per_minute: float = 120.0, burst: int = 40,
                  max_clients: int = 4096, clock=time.monotonic):
+        # A rate of zero would divide by zero on the first refused request,
+        # turning a misconfigured env var into a 500 on every call rather than
+        # the 429 it was reaching for.
+        if per_minute <= 0:
+            raise ValueError(f"per_minute must be positive, got {per_minute}")
+        if burst < 1:
+            raise ValueError(f"burst must be at least 1, got {burst}")
         self.rate = per_minute / 60.0
         self.burst = float(burst)
         self.max_clients = max_clients
@@ -40,8 +47,11 @@ class RateLimiter:
 
     def check(self, client: str) -> float:
         """Consume a token. Returns 0.0 if allowed, else seconds to wait."""
-        now = self._clock()
         with self._lock:
+            # Read inside the lock. Read outside it and two threads can commit
+            # timestamps out of order, so a bucket refills by a negative amount
+            # and the caller is refused for being early.
+            now = self._clock()
             tokens, last = self._buckets.pop(client, (self.burst, now))
             tokens = min(self.burst, tokens + (now - last) * self.rate)
 

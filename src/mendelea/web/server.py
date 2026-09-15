@@ -144,19 +144,32 @@ def make_handler(warehouse: Path):
 
     limiter = RateLimiter(per_minute=RATE_PER_MINUTE, burst=RATE_BURST)
 
-    def health() -> dict:
+    # Its own bucket, far wider than the browsing one. Exempting the probe
+    # entirely left a cheap-looking endpoint a caller could flood to exhaust
+    # a threaded server; throttling it with everything else meant a platform
+    # polling every few seconds could be told its healthy container is not.
+    health_limiter = RateLimiter(per_minute=600, burst=120)
+
+    def health() -> tuple[dict, int]:
         """Cheap enough for a probe every few seconds, real enough to mean something.
 
         Deliberately not `context()`: that builds the gene ranking and runs
         the policy scan, which is most of a second on a cold process. A probe
         that expensive would be the thing that made the container look
         unhealthy. This asks the database one question instead.
+
+        The status code carries the verdict, not just the body. Docker's
+        HEALTHCHECK reads the JSON, but a platform HTTP check reads only the
+        code -- so answering 200 while reporting "degraded" would let a
+        container with no timeline in it pass forever.
         """
         try:
             loaded = queries.timeline_start(conn()) is not None
         except Exception:  # noqa: BLE001 - a probe reports, it does not raise
-            return {"status": "degraded", "timeline": False}
-        return {"status": "ok" if loaded else "degraded", "timeline": loaded}
+            return {"status": "degraded", "timeline": False}, 503
+        if not loaded:
+            return {"status": "degraded", "timeline": False}, 503
+        return {"status": "ok", "timeline": True}, 200
 
     def require(value: str | None, pattern: re.Pattern, name: str) -> str:
         if not value or not pattern.match(value):
@@ -235,10 +248,13 @@ def make_handler(warehouse: Path):
             one = lambda key: (query.get(key) or [None])[0]  # noqa: E731
 
             try:
-                # Before anything else, and before the probe, which a platform
-                # polls far more often than any human browses.
+                # The probe first, on its own much wider bucket: a platform
+                # polls it far more often than any human browses.
                 if parsed.path == "/health":
-                    return self._json(health())
+                    if health_limiter.check(self._client()):
+                        return self._json({"error": "too many requests"}, 429)
+                    payload, status = health()
+                    return self._json(payload, status)
 
                 wait = limiter.check(self._client())
                 if wait:
