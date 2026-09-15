@@ -529,6 +529,27 @@ def cmd_serve(args) -> int:
     return 0
 
 
+def cmd_export_public(args) -> int:
+    """Write the warehouse a public deployment should ship: evidence only."""
+    cfg = config_module.load()
+    target = Path(args.out)
+    try:
+        counts = spans.export_public(cfg.warehouse, target)
+    except FileNotFoundError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+    before = cfg.warehouse.stat().st_size
+    after = target.stat().st_size
+    print(f"\n  wrote {target}")
+    for table, rows in counts.items():
+        print(f"    {table:<20} {rows:>10,} rows")
+    print(f"\n  {_human_bytes(after)} from {_human_bytes(before)} "
+          f"({100 * (1 - after / before):.0f}% smaller)")
+    print("  contains no case, decision or tenant table: a build that cannot leak them.")
+    return 0
+
+
 def cmd_provenance(args) -> int:
     """Audit every snapshot: does its content still hash to what we recorded,
     and do we know which code produced it?
@@ -600,6 +621,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--force", action="store_true",
                    help="steal the ingest lock from a run presumed dead")
     p.set_defaults(func=cmd_ingest)
+
+    p = sub.add_parser("export-public",
+                       help="write an evidence-only warehouse for public deployment")
+    p.add_argument("--out", default="mendelea-public.duckdb")
+    p.set_defaults(func=cmd_export_public)
 
     p = sub.add_parser("provenance", help="audit snapshot provenance")
     p.add_argument("--panel", default=None)
