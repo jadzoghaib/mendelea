@@ -20,6 +20,7 @@ Two properties worth stating because they are easy to get wrong:
 
 from __future__ import annotations
 
+import math
 import threading
 import time
 
@@ -32,8 +33,14 @@ class RateLimiter:
         # A rate of zero would divide by zero on the first refused request,
         # turning a misconfigured env var into a 500 on every call rather than
         # the 429 it was reaching for.
-        if per_minute <= 0:
-            raise ValueError(f"per_minute must be positive, got {per_minute}")
+        #
+        # `nan` and `inf` need saying separately, because `nan <= 0` is False
+        # and both come straight out of float() on an environment variable.
+        # Either one leaves every arithmetic comparison below false, so the
+        # bucket never empties and the limiter is silently not there -- the
+        # failure mode where a safety feature reports success by doing nothing.
+        if not math.isfinite(per_minute) or per_minute <= 0:
+            raise ValueError(f"per_minute must be a positive finite number, got {per_minute!r}")
         if burst < 1:
             raise ValueError(f"burst must be at least 1, got {burst}")
         self.rate = per_minute / 60.0

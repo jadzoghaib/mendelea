@@ -96,6 +96,35 @@ def test_exporting_over_the_source_is_refused(full_warehouse):
         connection.close()
 
 
+def test_the_cli_reports_the_refusal_instead_of_crashing(full_warehouse, tmp_path,
+                                                         monkeypatch, capsys):
+    """The guard is only useful if the person who tripped it can read it.
+
+    `export_public` raises ValueError to refuse overwriting the working
+    warehouse, and the CLI caught only FileNotFoundError, so the refusal
+    arrived as a traceback -- which reads like a crash rather than a decision.
+    """
+    from mendelea import cli
+
+    source, _ = full_warehouse
+    monkeypatch.setenv("MENDELEA_DATA_DIR", str(source.parent))
+    monkeypatch.setattr("mendelea.config.Config.warehouse",
+                        property(lambda self: source))
+
+    code = cli.main(["export-public", "--out", str(source)])
+    captured = capsys.readouterr()
+
+    assert code == 1
+    assert "refusing to overwrite" in captured.err
+    assert "Traceback" not in captured.err and "Traceback" not in captured.out
+    # and the private planes are untouched
+    connection = duckdb.connect(str(source), read_only=True)
+    try:
+        assert connection.execute("SELECT COUNT(*) FROM case_variant").fetchone()[0] == 1
+    finally:
+        connection.close()
+
+
 def test_a_re_export_never_leaves_the_target_missing(full_warehouse, tmp_path):
     """The previous artefact is replaced in one step, not removed and rewritten."""
     source, _ = full_warehouse
@@ -222,12 +251,29 @@ def test_the_client_table_is_capped():
     assert limiter.tracked <= 51
 
 
-@pytest.mark.parametrize("per_minute,burst", [(0, 10), (-1, 10), (60, 0)])
+@pytest.mark.parametrize("per_minute,burst", [
+    (0, 10), (-1, 10), (60, 0),
+    # Both come straight out of float() on an environment variable, and
+    # `nan <= 0` is False, so the obvious guard lets them through. Every
+    # comparison against nan is then false, the bucket never empties, and the
+    # limiter is silently absent while appearing configured.
+    (float("nan"), 10), (float("inf"), 10),
+])
 def test_a_useless_configuration_is_refused_at_construction(per_minute, burst):
     """A rate of zero divided by zero on the first refusal, turning a
     mistyped environment variable into a 500 on every request."""
     with pytest.raises(ValueError):
         RateLimiter(per_minute=per_minute, burst=burst)
+
+
+def test_a_non_finite_rate_would_have_disabled_the_limiter(monkeypatch):
+    """The reason the check above is worth its line: prove the failure mode."""
+    monkeypatch.setattr("mendelea.web.ratelimit.math.isfinite", lambda _: True)
+    limiter = RateLimiter(per_minute=float("nan"), burst=1)
+    assert [limiter.check("a") for _ in range(20)] == [0.0] * 20, (
+        "with the guard bypassed a nan rate lets everything through, "
+        "which is what the guard exists to stop"
+    )
 
 
 def test_waiting_does_not_bank_a_bigger_burst():
@@ -248,7 +294,10 @@ def throttled(full_warehouse, tmp_path, monkeypatch):
     source, _ = full_warehouse
     target = tmp_path / "public.duckdb"
     spans.export_public(source, target)
-    monkeypatch.setattr(server_module, "RATE_PER_MINUTE", 60.0)
+    # A tenth of a token per second, not one. At one per second the test only
+    # produced a 429 if eight sequential HTTP round trips finished inside a
+    # second, which is true on this laptop and not on a loaded CI box.
+    monkeypatch.setattr(server_module, "RATE_PER_MINUTE", 6.0)
     monkeypatch.setattr(server_module, "RATE_BURST", 3)
 
     server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(target))

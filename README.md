@@ -23,7 +23,7 @@
   <img alt="Python 3.11+" src="https://img.shields.io/badge/python-3.11%2B-1f2937?style=flat-square&logo=python&logoColor=7fd6c2">
   <img alt="DuckDB" src="https://img.shields.io/badge/duckdb-in--process-1f2937?style=flat-square&logo=duckdb&logoColor=7fd6c2">
   <img alt="Runtime dependencies: 2" src="https://img.shields.io/badge/runtime%20deps-2-1f2937?style=flat-square">
-  <img alt="Tests 262 offline plus 6 live" src="https://img.shields.io/badge/tests-262%20offline%20%2B%206%20live-1f2937?style=flat-square&logo=pytest&logoColor=1fa98a">
+  <img alt="Tests 266 offline plus 6 live" src="https://img.shields.io/badge/tests-266%20offline%20%2B%206%20live-1f2937?style=flat-square&logo=pytest&logoColor=1fa98a">
   <img alt="Phase 0 gate: passed" src="https://img.shields.io/badge/phase%200%20gate-passed%204.6%25-1f2937?style=flat-square">
   <img alt="Research use only" src="https://img.shields.io/badge/research%20use%20only-not%20a%20medical%20device-1f2937?style=flat-square&logoColor=d94c4c">
 </p>
@@ -202,7 +202,8 @@ payoff is that the product reduces to one query:
 SELECT cv.case_ref, then_.bucket AS at_signout, now_.bucket AS current
 FROM   case_variant cv
 JOIN   assertion_span then_ ON then_.allele_id = cv.allele_id
-       AND cv.reported_on BETWEEN then_.valid_from AND then_.valid_to
+       AND then_.valid_from <= cv.reported_on      -- half-open: valid_to is the
+       AND then_.valid_to   >  cv.reported_on      -- next span's valid_from
 JOIN   assertion_span now_  ON now_.allele_id = cv.allele_id AND now_.is_current
 WHERE  then_.bucket IS DISTINCT FROM now_.bucket;
 ```
@@ -406,7 +407,7 @@ losing, and it is the argument for the managed deployment rather than a laptop.
 ## Verification
 
 ```powershell
-pytest                      # 262 offline, 6 live deselected
+pytest                      # 266 offline, 6 live deselected
 pytest -m network           # the live path: a real ingest, checked against ClinVar's API
 mendelea provenance --panel hereditary-cancer   # checksum + reproducibility audit
 ```
