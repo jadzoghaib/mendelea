@@ -37,7 +37,8 @@ SELECT cv.case_ref, cv.allele_id,
        now_.bucket  AS current
 FROM   case_variant cv
 JOIN   assertion_span then_ ON then_.allele_id = cv.allele_id
-       AND cv.reported_on BETWEEN then_.valid_from AND then_.valid_to
+       AND then_.valid_from <= cv.reported_on      -- half-open: valid_to is the
+       AND then_.valid_to   >  cv.reported_on      -- next span's valid_from
 JOIN   assertion_span now_  ON now_.allele_id = cv.allele_id AND now_.is_current
 WHERE  then_.bucket IS DISTINCT FROM now_.bucket;
 ```
@@ -510,7 +511,7 @@ These are real and should be read before quoting any number this produces.
 pytest -q
 ```
 
-262 tests, offline by default. The ones worth reading first are `test_spans.py`
+266 tests, offline by default. The ones worth reading first are `test_spans.py`
 (the bitemporal invariants — every headline number is a query over that table)
 and the drift guard at the top of `test_clinvar.py`.
 

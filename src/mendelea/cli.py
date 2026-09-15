@@ -535,7 +535,11 @@ def cmd_export_public(args) -> int:
     target = Path(args.out)
     try:
         counts = spans.export_public(cfg.warehouse, target)
-    except FileNotFoundError as exc:
+    except (FileNotFoundError, ValueError) as exc:
+        # ValueError is the refusal to write over the working warehouse. It
+        # was added to `export_public` without being caught here, so the
+        # guard against destroying the private planes announced itself with
+        # a traceback -- which reads like a crash, not like a refusal.
         print(f"error: {exc}", file=sys.stderr)
         return 1
 
