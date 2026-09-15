@@ -256,6 +256,15 @@ def export_public(source: Path, target: Path) -> dict[str, int]:
 
     if not source.exists():
         raise FileNotFoundError(f"no warehouse at {source}")
+    # Writing the evidence-only copy over the source would silently destroy
+    # the case, decision and tenant planes -- the one part of the system that
+    # cannot be rebuilt from public data. Nothing about `--out` makes that
+    # obvious, so refuse it here rather than in the caller.
+    if target.resolve() == source.resolve():
+        raise ValueError(
+            f"refusing to overwrite the working warehouse at {source}: "
+            "the export drops the case, decision and tenant tables"
+        )
     target.parent.mkdir(parents=True, exist_ok=True)
     partial = target.with_suffix(target.suffix + ".partial")
     partial.unlink(missing_ok=True)
@@ -278,8 +287,10 @@ def export_public(source: Path, target: Path) -> dict[str, int]:
     finally:
         connection.close()
 
-    target.unlink(missing_ok=True)
-    partial.replace(target)   # atomic, so a killed export leaves no half file
+    # Straight over the top: `replace` overwrites atomically on both POSIX and
+    # Windows. Unlinking first opened a window where an interrupted export had
+    # removed the previous artefact and not yet installed the new one.
+    partial.replace(target)
     return counts
 
 

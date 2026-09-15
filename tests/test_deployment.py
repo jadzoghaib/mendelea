@@ -82,6 +82,31 @@ def test_a_failed_export_leaves_no_partial_file(tmp_path):
     assert list(tmp_path.iterdir()) == []
 
 
+def test_exporting_over_the_source_is_refused(full_warehouse):
+    """`--out` pointing at the working warehouse would destroy both private
+    planes, which are the only thing here that public data cannot rebuild."""
+    source, _ = full_warehouse
+    with pytest.raises(ValueError, match="refusing to overwrite"):
+        spans.export_public(source, source)
+    # and the case plane is still there
+    connection = duckdb.connect(str(source), read_only=True)
+    try:
+        assert connection.execute("SELECT COUNT(*) FROM case_variant").fetchone()[0] == 1
+    finally:
+        connection.close()
+
+
+def test_a_re_export_never_leaves_the_target_missing(full_warehouse, tmp_path):
+    """The previous artefact is replaced in one step, not removed and rewritten."""
+    source, _ = full_warehouse
+    target = tmp_path / "public.duckdb"
+    spans.export_public(source, target)
+    first = target.stat().st_size
+    spans.export_public(source, target)          # overwrite in place
+    assert target.exists() and target.stat().st_size == first
+    assert not (tmp_path / "public.duckdb.partial").exists()
+
+
 # --------------------------------------------------------------------------
 # A server running on the public artefact
 # --------------------------------------------------------------------------
@@ -125,6 +150,27 @@ def test_the_health_probe_answers(public_server):
     response = requests.get(f"{url}/health", timeout=10)
     assert response.status_code == 200
     assert response.json() == {"status": "ok", "timeline": True}
+
+
+def test_a_degraded_probe_answers_503_not_200(tmp_path):
+    """The status code has to carry the verdict.
+
+    Docker's HEALTHCHECK reads the JSON body, but a platform HTTP check reads
+    only the code -- so a 200 saying "degraded" is a container with no
+    timeline in it passing its health check forever.
+    """
+    duckdb.connect(str(tmp_path / "empty.duckdb")).close()
+    server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(tmp_path / "empty.duckdb"))
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        response = requests.get(
+            f"http://127.0.0.1:{server.server_address[1]}/health", timeout=10
+        )
+        assert response.status_code == 503
+        assert response.json() == {"status": "degraded", "timeline": False}
+    finally:
+        server.shutdown()
+        server.server_close()
 
 
 def test_responses_carry_the_security_headers(public_server):
@@ -174,6 +220,14 @@ def test_the_client_table_is_capped():
     for i in range(500):
         limiter.check(f"client-{i}")
     assert limiter.tracked <= 51
+
+
+@pytest.mark.parametrize("per_minute,burst", [(0, 10), (-1, 10), (60, 0)])
+def test_a_useless_configuration_is_refused_at_construction(per_minute, burst):
+    """A rate of zero divided by zero on the first refusal, turning a
+    mistyped environment variable into a 500 on every request."""
+    with pytest.raises(ValueError):
+        RateLimiter(per_minute=per_minute, burst=burst)
 
 
 def test_waiting_does_not_bank_a_bigger_burst():

@@ -46,19 +46,25 @@ EXPERT_PANEL_STARS = 3
 def ingested(tmp_path_factory):
     """One real release of one gene, fetched by range request and written to Parquet."""
     root = tmp_path_factory.mktemp("live")
-    releases = clinvar.select_releases(date.today().year, date.today().year, per_year=1)
+    # The *latest* archived release, not the first of the year. `select_releases`
+    # spreads its picks across the directory, so per_year=1 returns January --
+    # and comparing a January snapshot against what the API says today is a
+    # nine-month gap that only expert-panel stability was hiding.
+    releases = clinvar.list_releases(date.today().year)
     if not releases:
-        pytest.skip("no archived releases published for this year yet")
+        releases = clinvar.list_releases(date.today().year - 1)
+    if not releases:
+        pytest.skip("no archived releases published for this year or last")
 
     result = snapshot.ingest_release(
-        release=releases[0],
+        release=releases[-1],
         regions=[TP53],
         panel_slug="livecheck",
         snapshot_root=root / "snapshots",
         cache_dir=root / "cache",
     )
     path = snapshot.snapshot_path(
-        root / "snapshots", releases[0].release_date, "livecheck"
+        root / "snapshots", releases[-1].release_date, "livecheck"
     )
     return result, path
 
@@ -155,10 +161,11 @@ def test_expert_panel_classifications_match_clinvars_own_api(ingested):
     live = _clinvar_says([row[0] for row in sample])
     assert live, "ClinVar returned no classifications; the check proved nothing"
 
-    disagreements = []
+    disagreements, compared = [], 0
     for variation_id, ours, raw in sample:
         if variation_id not in live:
             continue
+        compared += 1
         theirs = clinvar.bucket(live[variation_id].replace(" ", "_"))
         if theirs != ours:
             disagreements.append(
@@ -166,6 +173,12 @@ def test_expert_panel_classifications_match_clinvars_own_api(ingested):
                 f"ClinVar says {theirs} from {live[variation_id]!r}"
             )
 
+    # Silently skipping the ids ESummary did not return would let this pass
+    # having checked one variant of twenty, which is a gate that cannot fail.
+    assert compared >= max(5, len(sample) // 2), (
+        f"only {compared} of {len(sample)} variants came back from ClinVar; "
+        "too few to call this a check"
+    )
     assert not disagreements, "point-in-time classification disagrees with ClinVar:\n  " + \
         "\n  ".join(disagreements)
 

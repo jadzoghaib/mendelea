@@ -23,7 +23,7 @@
   <img alt="Python 3.11+" src="https://img.shields.io/badge/python-3.11%2B-1f2937?style=flat-square&logo=python&logoColor=7fd6c2">
   <img alt="DuckDB" src="https://img.shields.io/badge/duckdb-in--process-1f2937?style=flat-square&logo=duckdb&logoColor=7fd6c2">
   <img alt="Runtime dependencies: 2" src="https://img.shields.io/badge/runtime%20deps-2-1f2937?style=flat-square">
-  <img alt="Tests 256 offline plus 6 live" src="https://img.shields.io/badge/tests-256%20offline%20%2B%206%20live-1f2937?style=flat-square&logo=pytest&logoColor=1fa98a">
+  <img alt="Tests 262 offline plus 6 live" src="https://img.shields.io/badge/tests-262%20offline%20%2B%206%20live-1f2937?style=flat-square&logo=pytest&logoColor=1fa98a">
   <img alt="Phase 0 gate: passed" src="https://img.shields.io/badge/phase%200%20gate-passed%204.6%25-1f2937?style=flat-square">
   <img alt="Research use only" src="https://img.shields.io/badge/research%20use%20only-not%20a%20medical%20device-1f2937?style=flat-square&logoColor=d94c4c">
 </p>
@@ -78,9 +78,15 @@ eight annual releases:
 **The number to quote is 4.6%, never 40%.** The gap between them is the whole reason this is
 difficult. Most of that raw movement is variants becoming *conflicting*, which tells a laboratory
 nothing it can act on, and 7,446 of those moved in a single release step because ClinVar changed how
-it aggregates submissions — not because anyone revised anything. Reporting that as movement would
-send a customer to re-review thousands of cases for nothing, and it would be the last thing they
-ever let the tool do. So the detector finds those sweeps and reports them separately.
+it aggregates submissions rather than because anyone revised anything. Reporting that as movement
+would send a customer to re-review thousands of cases for nothing, and it would be the last thing
+they ever let the tool do.
+
+That attribution is a heuristic on cohort behaviour, not a reading of ClinVar's release notes. The
+detector finds a transition sweeping an implausible share of the corpus in one release step and
+reports it separately for a human to adjudicate. It never silently discards it, and the actionable
+rate excludes `CONFLICTING` entirely, so the number that gets quoted does not depend on the
+heuristic being right.
 
 Movement is also concentrated rather than uniform, which means any claim about "how much moves" is
 meaningless without naming the gene set:
@@ -315,7 +321,7 @@ service, no volume, no object storage — the web layer never reads a Parquet fi
 queries DuckDB tables, so the whole deployable artefact is the timeline itself.
 
 ```powershell
-mendelea export-public --out mendelea-public.duckdb   # 58 MB, from a 294 MB warehouse
+mendelea export-public --out mendelea-public.duckdb   # ~60 MB, from a 308 MB warehouse
 docker build -t mendelea .
 docker run --rm -p 8000:8000 mendelea
 ```
@@ -327,9 +333,15 @@ cannot leak them**, whatever the auth layer does, and that is a far easier thing
 hospital's security review than "we checked the queries". A valid token from a real install
 gets a 401 against the public build, because the table it would be checked against is not there.
 
+`export-public` ships `assertion_dense` alongside the timeline. It is a build artefact, but the
+policy-event detector reads it, and a demo that cannot say which movement was a relabelling is
+missing the argument the product turns on.
+
 Fly is configured in [`fly.toml`](fly.toml) — Madrid, scale to zero, TLS terminated at the edge,
-health checks against `/health`. Hugging Face Spaces works from the same Dockerfile and is free,
-but it sleeps when idle and the URL reads as a research demo rather than a product.
+health checks against `/health`, which answers 503 rather than a cheerful 200 when the timeline
+is missing. Hugging Face Spaces runs the same image but needs `app_port: 8000` in the Space's
+`README.md` front matter, since it expects 7860 by default; it is free, sleeps when idle, and
+the URL reads as a research demo rather than a product.
 
 Three things the demo needed before it could face the internet, all now in place:
 
@@ -376,8 +388,12 @@ gh release create data-2026-09-15 evidence-snapshots.tar.gz mendelea-public.duck
 
 Releases rather than the repository, because git keeps every version of a binary in full and
 forever. Two files are worth the space: the 65 MB of snapshots, which are the system of record,
-and the 61 MB demo warehouse, which saves a re-ingest before a meeting. The 295 MB working
+and the ~60 MB demo warehouse, which saves a re-ingest before a meeting. The 308 MB working
 warehouse is not — it rebuilds from the snapshots in about twenty seconds.
+
+(`export-public` reports binary units, as `du` does, while GitHub and your filesystem report
+decimal — the same file, about 56 MiB or 59 MB. The exact byte count shifts a little between
+exports because DuckDB allocates pages differently each time.)
 
 The genuinely irreplaceable asset is the one this repository has almost none of yet: the
 decision ledger. Reviews a laboratory records cannot be recreated from public data, and they are
@@ -390,7 +406,7 @@ losing, and it is the argument for the managed deployment rather than a laptop.
 ## Verification
 
 ```powershell
-pytest                      # 256 offline, 6 live deselected
+pytest                      # 262 offline, 6 live deselected
 pytest -m network           # the live path: a real ingest, checked against ClinVar's API
 mendelea provenance --panel hereditary-cancer   # checksum + reproducibility audit
 ```
@@ -430,7 +446,13 @@ Read these before quoting any number this produces.
   regions. Change the gene list and `ABSENT` transitions become artefacts.
 - **Terminology drift is absorbed, not eliminated.** ClinVar renamed `Conflicting_interpretations_of_pathogenicity`
   mid-window; buckets absorb it and a test guards it, but the next rename will need the same treatment.
-- **No TLS, no rate limiting.** Bind to `127.0.0.1` only.
+- **TLS is the platform's job, not the application's.** The server speaks plain HTTP and
+  always has. That is fine behind Fly, a Space or any reverse proxy that terminates TLS, and
+  it is why `serve` still binds `127.0.0.1` unless you tell it otherwise. Exposing the port
+  directly puts the tokens on the wire in the clear.
+- **The rate limiter is in-process.** It bounds one container. Several containers behind a
+  load balancer each get their own bucket, so the effective limit multiplies by the replica
+  count — which is the right trade for a demo and the wrong one for an API under contract.
 
 ---
 
