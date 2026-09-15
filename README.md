@@ -347,6 +347,44 @@ Behind a proxy, set `MENDELEA_TRUSTED_IP_HEADER` to the header that proxy actual
 (`Fly-Client-IP` on Fly). Unset, the limiter reads the socket, which behind a proxy is one
 address for the whole world; trusted blindly, anyone could mint a fresh quota per request.
 
+### Backing it up, and rebuilding from nothing
+
+Nothing under `$MENDELEA_DATA_DIR` is in the repository, and that is correct: it is 369 MB of
+data, all of it derived from a public archive. **A bare clone plus a network connection gets
+back to a working install in about half an hour**, with no file restored from anywhere:
+
+```powershell
+mendelea ingest --panel hereditary-cancer --from 2018 --to 2026 --per-year 1
+mendelea spans  --panel hereditary-cancer
+mendelea case-demo --out demo-cases.csv --count 800 --seed 7   # the demo tenant, same seed
+mendelea case-load --tenant demo-lab --file demo-cases.csv
+```
+
+The one thing that does **not** come back identical is the snapshots themselves. They are
+content-addressed and immutable by design, and they were written by pyarrow; a re-ingest now
+writes them with DuckDB, so the bytes and the `sha256` in every manifest differ even though the
+records are the same. The content is reproducible, the artefact is not. If you ever need to
+show which exact file a published figure was computed from, that file has to be archived rather
+than regenerated:
+
+```powershell
+tar -czf evidence-snapshots.tar.gz -C $env:USERPROFILE\mendelea-data evidence
+gh release create data-2026-09-15 evidence-snapshots.tar.gz mendelea-public.duckdb `
+  --title "Evidence snapshots and public demo warehouse" `
+  --notes "31-gene hereditary-cancer panel, 2018-12-25 to 2025-12-28, 8 releases"
+```
+
+Releases rather than the repository, because git keeps every version of a binary in full and
+forever. Two files are worth the space: the 65 MB of snapshots, which are the system of record,
+and the 61 MB demo warehouse, which saves a re-ingest before a meeting. The 295 MB working
+warehouse is not — it rebuilds from the snapshots in about twenty seconds.
+
+The genuinely irreplaceable asset is the one this repository has almost none of yet: the
+decision ledger. Reviews a laboratory records cannot be recreated from public data, and they are
+the reason the ledger is hash-chained rather than a table of notes. Today it holds two demo
+entries. Once a real customer's reviews are in it, it stops being a thing you can shrug about
+losing, and it is the argument for the managed deployment rather than a laptop.
+
 ---
 
 ## Verification
