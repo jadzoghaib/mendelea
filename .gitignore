@@ -1,6 +1,24 @@
 # Data and build artefacts never belong in the repo. The evidence plane grows
 # to tens of gigabytes and lives at $MENDELEA_DATA_DIR (default ~/mendelea-data),
 # deliberately outside any synced folder.
+#
+# This catches `mendelea-public.duckdb` too, and that is deliberate rather
+# than incidental: at ~60 MB it would push (GitHub warns over 50 MB and
+# refuses over 100), but git stores every version of a binary in full and
+# forever, so each regeneration would add another 60 MB to a history that can
+# never be pruned without rewriting it. It is also derived -- one command from
+# the warehouse, which is one command from the snapshots.
+#
+# Back it up as a GitHub Release asset instead (2 GB per file, no effect on
+# clone size, and a URL that CI and a Dockerfile can fetch):
+#
+#   gh release create data-$(date +%Y-%m-%d) mendelea-public.duckdb \
+#       --title "Public demo warehouse" --notes "31-gene panel, 8 releases"
+#
+# The snapshots under $MENDELEA_DATA_DIR/evidence are the ones actually worth
+# archiving: they are the system of record, they are content-addressed, and
+# re-ingesting produces different bytes now that DuckDB writes them. See the
+# backup section of README.md.
 *.duckdb
 *.duckdb.wal
 *.parquet
