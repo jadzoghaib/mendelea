@@ -321,6 +321,123 @@ def test_a_flood_is_refused_with_429_and_retry_after(throttled):
     assert refused.json() == {"error": "too many requests"}
 
 
+# --------------------------------------------------------------------------
+# Bounded concurrency: what everyone can ask for together
+# --------------------------------------------------------------------------
+
+
+def test_the_database_is_capped_not_left_to_size_itself(public_server):
+    """DuckDB reads the cgroup limit and claims 80% of it, then starts one
+    worker per visible CPU. In a 512 MB container that was 409 MB and 16
+    workers, leaving nothing for Python or the HTTP threads -- measured as an
+    OOMKill under load. Both are set explicitly now."""
+    url, _ = public_server
+    payload = requests.get(f"{url}/api/context", timeout=10)
+    assert payload.status_code == 200      # the SETs did not break startup
+    assert server_module.DB_MEMORY_LIMIT and server_module.DB_THREADS >= 1
+    assert server_module.DB_MAX_CONCURRENT >= 1
+
+
+def test_concurrent_requests_all_succeed(public_server):
+    """The failure this bound exists to prevent: 60 simultaneous requests for
+    a large gene ran enough queries at once to exhaust DuckDB's budget, and 38
+    came back as "internal error" to a visitor."""
+    url, _ = public_server
+    codes, errors = [], []
+
+    def hit():
+        try:
+            codes.append(requests.get(
+                f"{url}/api/variants", params={"gene": "TESTGENE", "on": "2019-01-02"},
+                timeout=60).status_code)
+        except Exception as exc:                      # noqa: BLE001
+            errors.append(type(exc).__name__)
+
+    threads = [threading.Thread(target=hit) for _ in range(30)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert errors == []
+    assert set(codes) == {200}, f"expected every request served, got {sorted(set(codes))}"
+
+
+def test_a_slot_is_released_after_every_request(public_server):
+    """A leaked slot would work under test and wedge the server in production
+    after `DB_MAX_CONCURRENT` requests, including failed ones."""
+    url, _ = public_server
+    for _ in range(server_module.DB_MAX_CONCURRENT + 3):
+        # a 400 still has to give the slot back
+        requests.get(f"{url}/api/variants", params={"gene": "!!bad!!"}, timeout=10)
+    assert requests.get(f"{url}/api/context", timeout=10).status_code == 200
+
+
+def test_an_exhausted_queue_answers_503_rather_than_hanging(full_warehouse, tmp_path,
+                                                            monkeypatch):
+    """Under genuine overload a visitor should be told to come back, not held
+    open until their browser times out."""
+    source, _ = full_warehouse
+    target = tmp_path / "public.duckdb"
+    spans.export_public(source, target)
+    monkeypatch.setattr(server_module, "DB_MAX_CONCURRENT", 1)
+    monkeypatch.setattr(server_module, "DB_QUEUE_TIMEOUT", 0.05)
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(target))
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    url = f"http://127.0.0.1:{server.server_address[1]}"
+    try:
+        codes = []
+
+        def hit():
+            try:
+                codes.append(requests.get(
+                    f"{url}/api/variants", params={"gene": "TESTGENE", "on": "2019-01-02"},
+                    timeout=30).status_code)
+            except Exception:                          # noqa: BLE001
+                codes.append(None)
+
+        threads = [threading.Thread(target=hit) for _ in range(12)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        assert 200 in codes, "with one slot, someone must still be served"
+        assert set(codes) <= {200, 503}, f"unexpected statuses: {sorted(set(codes) - {200, 503})}"
+        # and it recovers once the rush is over
+        assert requests.get(f"{url}/api/context", timeout=10).status_code == 200
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_the_health_probe_does_not_queue_behind_queries(full_warehouse, tmp_path,
+                                                        monkeypatch):
+    """A probe that waits behind a heavy gene reports the container unhealthy
+    for being busy, which gets it restarted at exactly the wrong moment."""
+    source, _ = full_warehouse
+    target = tmp_path / "public.duckdb"
+    spans.export_public(source, target)
+    monkeypatch.setattr(server_module, "DB_MAX_CONCURRENT", 1)
+    monkeypatch.setattr(server_module, "DB_QUEUE_TIMEOUT", 30.0)
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(target))
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    url = f"http://127.0.0.1:{server.server_address[1]}"
+    try:
+        busy = [threading.Thread(target=lambda: requests.get(
+            f"{url}/api/variants", params={"gene": "TESTGENE", "on": "2019-01-02"},
+            timeout=30)) for _ in range(6)]
+        for t in busy:
+            t.start()
+        assert requests.get(f"{url}/health", timeout=10).status_code == 200
+        for t in busy:
+            t.join()
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
 def test_the_health_probe_is_never_throttled(throttled):
     """A platform polls it far more often than a human browses, and a probe
     answering 429 is a container that gets restarted for being popular."""
