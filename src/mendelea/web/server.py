@@ -72,6 +72,7 @@ DB_THREADS = int(os.environ.get("MENDELEA_DB_THREADS", "2"))
 # question and the one that actually exhausts the box.
 DB_MAX_CONCURRENT = int(os.environ.get("MENDELEA_DB_MAX_CONCURRENT", "4"))
 DB_QUEUE_TIMEOUT = float(os.environ.get("MENDELEA_DB_QUEUE_TIMEOUT", "20"))
+SOCKET_TIMEOUT = float(os.environ.get("MENDELEA_SOCKET_TIMEOUT", "30"))
 
 # Gene symbols reach SQL as a bound parameter, but bound or not we only ever
 # want to see something that looks like a gene symbol.
@@ -202,6 +203,13 @@ def make_handler(warehouse: Path):
     # polling every few seconds could be told its healthy container is not.
     health_limiter = RateLimiter(per_minute=600, burst=120)
 
+    # The probe's answer, computed once. The warehouse is opened read-only and
+    # cannot change under a running server, so "is there a timeline in here"
+    # is a constant -- and a probe that queries on every call is a database
+    # path outside the concurrency bound, which rotating clients could use to
+    # get work done for free.
+    health_state: dict = {}
+
     def health() -> tuple[dict, int]:
         """Cheap enough for a probe every few seconds, real enough to mean something.
 
@@ -215,13 +223,20 @@ def make_handler(warehouse: Path):
         code -- so answering 200 while reporting "degraded" would let a
         container with no timeline in it pass forever.
         """
+        if "verdict" in health_state:
+            return health_state["verdict"]
         try:
             loaded = queries.timeline_start(conn()) is not None
         except Exception:  # noqa: BLE001 - a probe reports, it does not raise
+            # Deliberately not cached: this one may be transient, and a
+            # container permanently remembering one bad read is worse.
+            log.exception("health probe could not read the warehouse")
             return {"status": "degraded", "timeline": False}, 503
-        if not loaded:
-            return {"status": "degraded", "timeline": False}, 503
-        return {"status": "ok", "timeline": True}, 200
+        health_state["verdict"] = (
+            ({"status": "ok", "timeline": True}, 200) if loaded
+            else ({"status": "degraded", "timeline": False}, 503)
+        )
+        return health_state["verdict"]
 
     def require(value: str | None, pattern: re.Pattern, name: str) -> str:
         if not value or not pattern.match(value):
@@ -242,7 +257,16 @@ def make_handler(warehouse: Path):
         return number
 
     class Handler(BaseHTTPRequestHandler):
+        # Exposed so `serve` can pay the cold-start cost before the port is
+        # open rather than charging it to the first visitor.
+        warm = staticmethod(context)
+
         server_version = "mendelea"
+        # ThreadingHTTPServer sets no socket timeout, so a client that opens a
+        # connection and then stops reading holds a thread indefinitely. With
+        # a bounded number of query slots that is the difference between a
+        # slow visitor and an outage.
+        timeout = SOCKET_TIMEOUT
         # Persistent connections: the page issues a request per slider step,
         # and a fresh TCP handshake for each of them was the slowest part.
         protocol_version = "HTTP/1.1"
@@ -294,6 +318,85 @@ def make_handler(warehouse: Path):
                 raise ApiError(401, "missing or invalid bearer token")
             return tenant
 
+        # Routed before a slot is taken, so a scanner asking for
+        # /favicon.ico gets a prompt 404 instead of queueing for a database
+        # slot it will never use.
+        DATA_ROUTES = frozenset({
+            "/api/context", "/api/variants", "/api/composition",
+            "/api/timeline", "/api/case/report",
+        })
+
+        def _payload(self, path, one):
+            """The database half of a request. Runs holding a query slot.
+
+            Returns the object to serialise. Deliberately does no writing:
+            `json.dumps` and the socket write happen after the slot is
+            released, because a slow client holding a slot through its own
+            download would deny the other three to everybody else.
+            """
+            if path == "/api/context":
+                return context()[0]
+
+            if path == "/api/variants":
+                gene = require(one("gene"), SAFE_SYMBOL, "gene")
+                on = require(one("on"), SAFE_DATE, "on")
+                q = optional(one("q"), SAFE_QUERY, "q")
+                only_moved = one("moved") == "1"
+                limit = integer(one("limit"), "limit", 400, 1, PAGE_LIMIT)
+                offset = integer(one("offset"), "offset", 0, 0, 9_999_999)
+                _, events = context()
+                page = queries.variants_on(
+                    conn(), gene, on, events=events, only_moved=only_moved,
+                    q=q, limit=limit, offset=offset,
+                )
+                return {
+                    "headline": queries.headline(conn(), gene, on, events),
+                    "variants": page["rows"],
+                    "total": page["total"],
+                    "offset": offset,
+                    "limit": limit,
+                }
+
+            if path == "/api/composition":
+                gene = require(one("gene"), SAFE_SYMBOL, "gene")
+                ctx, _ = context()
+                return {
+                    "gene": gene.upper(),
+                    "composition": queries.composition(
+                        conn(), gene, ctx["panel"]["panel"]
+                    ),
+                }
+
+            if path == "/api/timeline":
+                allele = require(one("allele_id"), SAFE_ID, "allele_id")
+                return {"timeline": queries.timeline(conn(), allele)}
+
+            # The only endpoint that touches tenant data. The tenant is taken
+            # from the token and never from the request, so a caller cannot
+            # ask for someone else's report.
+            tenant = self._authenticate()
+            _, events = context()
+            rep = case_report.build(conn(), tenant, policy.suspect_keys(events))
+            return {
+                "tenant": rep.tenant_id,
+                "evidence_panel": rep.evidence_panel,
+                "evidence_from": rep.evidence_from,
+                "evidence_to": rep.evidence_to,
+                "reconciliation": {
+                    "loaded": rep.reconciliation.loaded,
+                    "unmatched": rep.reconciliation.unmatched,
+                    "before_coverage": rep.reconciliation.before_coverage,
+                    "examined": rep.reconciliation.examined,
+                    "match_rate": round(rep.reconciliation.match_rate, 4),
+                    "sound": rep.reconciliation.is_sound(),
+                },
+                "unchanged": rep.unchanged,
+                "moved": rep.moved,
+                "actionable": rep.actionable,
+                "policy_suspect": rep.policy_suspect,
+                "findings": rep.findings,
+            }
+
         def do_GET(self):  # noqa: N802 - stdlib naming
             parsed = urlparse(self.path)
             query = parse_qs(parsed.query)
@@ -320,71 +423,13 @@ def make_handler(warehouse: Path):
                         200, (STATIC / "index.html").read_bytes(), "text/html; charset=utf-8"
                     )
 
+                if parsed.path not in self.DATA_ROUTES:
+                    raise ApiError(404, "no such endpoint")
+
                 with query_slot():
-                    if parsed.path == "/api/context":
-                        return self._json(context()[0])
-
-                    if parsed.path == "/api/variants":
-                        gene = require(one("gene"), SAFE_SYMBOL, "gene")
-                        on = require(one("on"), SAFE_DATE, "on")
-                        q = optional(one("q"), SAFE_QUERY, "q")
-                        only_moved = one("moved") == "1"
-                        limit = integer(one("limit"), "limit", 400, 1, PAGE_LIMIT)
-                        offset = integer(one("offset"), "offset", 0, 0, 9_999_999)
-                        _, events = context()
-                        page = queries.variants_on(
-                            conn(), gene, on, events=events, only_moved=only_moved,
-                            q=q, limit=limit, offset=offset,
-                        )
-                        return self._json({
-                            "headline": queries.headline(conn(), gene, on, events),
-                            "variants": page["rows"],
-                            "total": page["total"],
-                            "offset": offset,
-                            "limit": limit,
-                        })
-
-                    if parsed.path == "/api/composition":
-                        gene = require(one("gene"), SAFE_SYMBOL, "gene")
-                        ctx, _ = context()
-                        return self._json({
-                            "gene": gene.upper(),
-                            "composition": queries.composition(
-                                conn(), gene, ctx["panel"]["panel"]
-                            ),
-                        })
-
-                    if parsed.path == "/api/timeline":
-                        allele = require(one("allele_id"), SAFE_ID, "allele_id")
-                        return self._json({"timeline": queries.timeline(conn(), allele)})
-
-                    if parsed.path == "/api/case/report":
-                        # The only endpoint that touches tenant data. The tenant is
-                        # taken from the token and never from the request, so a
-                        # caller cannot ask for someone else's report.
-                        tenant = self._authenticate()
-                        _, events = context()
-                        rep = case_report.build(conn(), tenant, policy.suspect_keys(events))
-                        return self._json({
-                            "tenant": rep.tenant_id,
-                            "evidence_panel": rep.evidence_panel,
-                            "evidence_from": rep.evidence_from,
-                            "evidence_to": rep.evidence_to,
-                            "reconciliation": {
-                                "loaded": rep.reconciliation.loaded,
-                                "unmatched": rep.reconciliation.unmatched,
-                                "before_coverage": rep.reconciliation.before_coverage,
-                                "examined": rep.reconciliation.examined,
-                                "match_rate": round(rep.reconciliation.match_rate, 4),
-                                "sound": rep.reconciliation.is_sound(),
-                            },
-                            "unchanged": rep.unchanged,
-                            "moved": rep.moved,
-                            "actionable": rep.actionable,
-                            "policy_suspect": rep.policy_suspect,
-                            "findings": rep.findings,
-                        })
-                raise ApiError(404, "no such endpoint")
+                    payload = self._payload(parsed.path, one)
+                # Serialised and written with the slot already given back.
+                return self._json(payload)
 
             except ApiError as exc:
                 self._json({"error": exc.message}, exc.status)
@@ -399,7 +444,14 @@ def make_handler(warehouse: Path):
 
 
 def serve(warehouse: Path, host: str = "127.0.0.1", port: int = 8000) -> None:
-    server = ThreadingHTTPServer((host, port), make_handler(warehouse))
+    handler = make_handler(warehouse)
+    # Build the context before accepting traffic. It costs ~2.7s on a single
+    # vCPU -- the policy scan over the dense table plus the gene ranking --
+    # and it was being paid by whoever arrived first. On a scale-to-zero
+    # deployment that is every visitor who wakes the machine. Paid here it
+    # lands inside the platform's start-up grace period instead.
+    handler.warm()
+    server = ThreadingHTTPServer((host, port), handler)
     print(f"  Mendelea time machine  ->  http://{host}:{port}")
     print("  read-only, public ClinVar data, Ctrl-C to stop\n")
     try:

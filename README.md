@@ -23,7 +23,7 @@
   <img alt="Python 3.11+" src="https://img.shields.io/badge/python-3.11%2B-1f2937?style=flat-square&logo=python&logoColor=7fd6c2">
   <img alt="DuckDB" src="https://img.shields.io/badge/duckdb-in--process-1f2937?style=flat-square&logo=duckdb&logoColor=7fd6c2">
   <img alt="Runtime dependencies: 2" src="https://img.shields.io/badge/runtime%20deps-2-1f2937?style=flat-square">
-  <img alt="Tests 271 offline plus 6 live" src="https://img.shields.io/badge/tests-271%20offline%20%2B%206%20live-1f2937?style=flat-square&logo=pytest&logoColor=1fa98a">
+  <img alt="Tests 276 offline plus 6 live" src="https://img.shields.io/badge/tests-276%20offline%20%2B%206%20live-1f2937?style=flat-square&logo=pytest&logoColor=1fa98a">
   <img alt="Phase 0 gate: passed" src="https://img.shields.io/badge/phase%200%20gate-passed%204.6%25-1f2937?style=flat-square">
   <img alt="Research use only" src="https://img.shields.io/badge/research%20use%20only-not%20a%20medical%20device-1f2937?style=flat-square&logoColor=d94c4c">
 </p>
@@ -344,21 +344,30 @@ is missing. Hugging Face Spaces runs the same image but needs `app_port: 8000` i
 `README.md` front matter, since it expects 7860 by default; it is free, sleeps when idle, and
 the URL reads as a research demo rather than a product.
 
-**What it survives, measured rather than assumed.** In a 512 MB container, the size `fly.toml`
-asks for, against the heaviest gene in the panel:
+**What it survives, measured on one vCPU and 512 MB — what `fly.toml` actually asks for:**
 
-| simultaneous visitors | result | peak memory | median |
-|---|---|---|---|
-| 20 | all served | 60 MB | 0.5 s |
-| 60 | all served | 130 MB | 1.5 s |
-| 150 | all served | 198 MB | 4.2 s |
+| | |
+|---|---|
+| A full first page load | **~300 ms** |
+| 20 simultaneous visitors, each loading a page | median 2.6 s, p95 4.8 s |
+| 60 simultaneous requests for the heaviest gene | all served, median 10 s |
+| Peak memory across every test above | 78–131 MB of 512 |
 
-Those numbers are the *second* set. The first attempt was OOM-killed at 120, because DuckDB
-sizes itself for a machine it has to itself: it reads the cgroup limit, claims 80% of it, and
-starts one worker per visible CPU — 409 MB of the 512 and 16 workers on one shared core. All
-three of its budgets are now set explicitly, and a bounded number of queries run at once, so
-overload queues and then sheds with a 503 instead of taking the container down. Raise them
-together on a bigger VM; they are one budget, not three knobs.
+The last row is the point: it degrades into seconds under a spike rather than failing, and
+nothing in that range comes close to the memory ceiling.
+
+**More memory would not help, and that is measured too.** Raising DuckDB's budget from 192 MB
+to the 409 MB it would choose for itself moved the median by 0.4% — 11,689 ms to 11,732 ms —
+because the heaviest query peaks at 34 MB and simply never wants more. The bottleneck is CPU:
+the same load on two vCPUs runs at 6.5 s instead of 10 s. Beyond two it stops improving,
+because the concurrency bound becomes the limit rather than the cores.
+
+So the upgrade path is `shared-cpu-2x`, not more RAM. The three database settings in
+[`fly.toml`](fly.toml) are one budget rather than three knobs, and the reason they are set at
+all is that the defaults are sized for a machine DuckDB has to itself: it reads the cgroup
+limit, claims 80% of it, and starts one worker per visible CPU — 409 MB of the 512 and 16
+workers on one shared core, which OOM-killed the container at 120 concurrent visitors before
+any of this was pinned down.
 
 Four things the demo needed before it could face the internet, all now in place:
 
@@ -375,6 +384,13 @@ Four things the demo needed before it could face the internet, all now in place:
   can ask for; it says nothing about what a hundred visitors ask for together, which is the
   thing that actually exhausts the box. Queries run a few at a time, the rest wait briefly,
   and a genuine rush is told to come back rather than held open until the browser gives up.
+  The bound covers the query only — a client that stops reading mid-download holds a socket,
+  not a database slot, because four stalled readers holding slots would have been an outage
+  dressed as a safety feature.
+- **A warm start.** Building the context costs 2.7 s on one vCPU: the policy scan over 1.6M
+  rows plus the gene ranking. That used to be charged to whoever arrived first, which on a
+  scale-to-zero deployment is every visitor who wakes the machine. It is now paid before the
+  port opens, inside the platform's start-up grace period. First request: 23 ms.
 
 Behind a proxy, set `MENDELEA_TRUSTED_IP_HEADER` to the header that proxy actually sets
 (`Fly-Client-IP` on Fly). Unset, the limiter reads the socket, which behind a proxy is one
@@ -427,7 +443,7 @@ losing, and it is the argument for the managed deployment rather than a laptop.
 ## Verification
 
 ```powershell
-pytest                      # 271 offline, 6 live deselected
+pytest                      # 276 offline, 6 live deselected
 pytest -m network           # the live path: a real ingest, checked against ClinVar's API
 mendelea provenance --panel hereditary-cancer   # checksum + reproducibility audit
 ```

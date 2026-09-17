@@ -7,6 +7,7 @@ and that a platform probe is cheap enough to run every few seconds.
 """
 
 import threading
+import time
 from http.server import ThreadingHTTPServer
 
 import duckdb
@@ -326,22 +327,43 @@ def test_a_flood_is_refused_with_429_and_retry_after(throttled):
 # --------------------------------------------------------------------------
 
 
-def test_the_database_is_capped_not_left_to_size_itself(public_server):
-    """DuckDB reads the cgroup limit and claims 80% of it, then starts one
-    worker per visible CPU. In a 512 MB container that was 409 MB and 16
-    workers, leaving nothing for Python or the HTTP threads -- measured as an
-    OOMKill under load. Both are set explicitly now."""
-    url, _ = public_server
-    payload = requests.get(f"{url}/api/context", timeout=10)
-    assert payload.status_code == 200      # the SETs did not break startup
-    assert server_module.DB_MEMORY_LIMIT and server_module.DB_THREADS >= 1
-    assert server_module.DB_MAX_CONCURRENT >= 1
+
+def test_the_database_caps_are_actually_applied(monkeypatch, tmp_path):
+    """Reading the module constants proves nothing.
+
+    The previous version of this test asserted that `DB_MEMORY_LIMIT` existed,
+    which would still have passed with both `SET` statements deleted. This one
+    records what is issued to DuckDB.
+    """
+    duckdb.connect(str(tmp_path / "w.duckdb")).close()
+    issued = []
+    real_connect = duckdb.connect
+
+    class Recording:
+        def __init__(self, inner):
+            self._inner = inner
+
+        def execute(self, sql, *a, **k):
+            issued.append(sql)
+            return self._inner.execute(sql, *a, **k)
+
+        def __getattr__(self, name):
+            return getattr(self._inner, name)
+
+    monkeypatch.setattr(server_module.duckdb, "connect",
+                        lambda *a, **k: Recording(real_connect(*a, **k)))
+    make_handler(tmp_path / "w.duckdb")
+
+    assert any("memory_limit" in s for s in issued), f"no memory cap issued: {issued}"
+    assert any("threads" in s for s in issued), f"no thread cap issued: {issued}"
+    assert any(server_module.DB_MEMORY_LIMIT in s for s in issued), \
+        "the cap issued is not the configured one"
 
 
 def test_concurrent_requests_all_succeed(public_server):
     """The failure this bound exists to prevent: 60 simultaneous requests for
     a large gene ran enough queries at once to exhaust DuckDB's budget, and 38
-    came back as "internal error" to a visitor."""
+    of them came back to a visitor as "internal error"."""
     url, _ = public_server
     codes, errors = [], []
 
@@ -350,7 +372,7 @@ def test_concurrent_requests_all_succeed(public_server):
             codes.append(requests.get(
                 f"{url}/api/variants", params={"gene": "TESTGENE", "on": "2019-01-02"},
                 timeout=60).status_code)
-        except Exception as exc:                      # noqa: BLE001
+        except Exception as exc:                       # noqa: BLE001
             errors.append(type(exc).__name__)
 
     threads = [threading.Thread(target=hit) for _ in range(30)]
@@ -364,75 +386,177 @@ def test_concurrent_requests_all_succeed(public_server):
 
 
 def test_a_slot_is_released_after_every_request(public_server):
-    """A leaked slot would work under test and wedge the server in production
-    after `DB_MAX_CONCURRENT` requests, including failed ones."""
+    """A leaked slot would pass a happy-path test and wedge the server after
+    `DB_MAX_CONCURRENT` requests in production, including failed ones."""
     url, _ = public_server
     for _ in range(server_module.DB_MAX_CONCURRENT + 3):
-        # a 400 still has to give the slot back
         requests.get(f"{url}/api/variants", params={"gene": "!!bad!!"}, timeout=10)
     assert requests.get(f"{url}/api/context", timeout=10).status_code == 200
 
 
-def test_an_exhausted_queue_answers_503_rather_than_hanging(full_warehouse, tmp_path,
-                                                            monkeypatch):
-    """Under genuine overload a visitor should be told to come back, not held
-    open until their browser times out."""
+@pytest.fixture
+def blocked(full_warehouse, tmp_path, monkeypatch):
+    """A server whose single query slot is demonstrably held.
+
+    Racing real queries and hoping one wins is how a test passes without
+    exercising anything. Here the holding request waits on an event, so "the
+    slot is taken" is a fact before the assertion runs.
+    """
     source, _ = full_warehouse
     target = tmp_path / "public.duckdb"
     spans.export_public(source, target)
     monkeypatch.setattr(server_module, "DB_MAX_CONCURRENT", 1)
-    monkeypatch.setattr(server_module, "DB_QUEUE_TIMEOUT", 0.05)
+    monkeypatch.setattr(server_module, "DB_QUEUE_TIMEOUT", 0.4)
+
+    holding, release = threading.Event(), threading.Event()
+    real = server_module.queries.variants_on
+
+    def block(*a, **k):
+        holding.set()
+        release.wait(timeout=30)
+        return real(*a, **k)
+
+    monkeypatch.setattr(server_module.queries, "variants_on", block)
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(target))
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    url = f"http://127.0.0.1:{server.server_address[1]}"
+
+    hold = threading.Thread(target=lambda: requests.get(
+        f"{url}/api/variants", params={"gene": "TESTGENE", "on": "2019-01-02"},
+        timeout=60), daemon=True)
+    hold.start()
+    assert holding.wait(timeout=20), "the blocking request never reached the query"
+    try:
+        yield url, release
+    finally:
+        release.set()
+        hold.join(timeout=30)
+        server.shutdown()
+        server.server_close()
+
+
+def test_an_exhausted_queue_answers_503(blocked):
+    """With the only slot provably held, a second request must be shed."""
+    url, _ = blocked
+    response = requests.get(f"{url}/api/variants",
+                            params={"gene": "TESTGENE", "on": "2019-01-02"}, timeout=30)
+    assert response.status_code == 503
+    assert response.json() == {"error": "server busy, please retry"}
+
+
+def test_the_queue_recovers_once_the_rush_passes(blocked):
+    url, release = blocked
+    assert requests.get(f"{url}/api/context", timeout=30).status_code == 503
+    release.set()
+    time.sleep(0.6)
+    assert requests.get(f"{url}/api/context", timeout=30).status_code == 200
+
+
+def test_the_health_probe_does_not_queue_behind_queries(blocked):
+    """A probe that waits reports the container unhealthy for being busy, and
+    gets it restarted at precisely the wrong moment. The slot is held here, so
+    a prompt 200 can only mean the probe never asked for one."""
+    url, _ = blocked
+    started = time.perf_counter()
+    response = requests.get(f"{url}/health", timeout=30)
+    assert response.status_code == 200
+    assert time.perf_counter() - started < server_module.DB_QUEUE_TIMEOUT, \
+        "the probe waited for a query slot"
+
+
+def test_an_unknown_path_is_404_without_taking_a_slot(blocked):
+    """Otherwise a scanner asking for /favicon.ico queues for a database slot
+    it will never use, and gets a 503 under load instead of a prompt 404."""
+    url, _ = blocked
+    started = time.perf_counter()
+    response = requests.get(f"{url}/favicon.ico", timeout=30)
+    assert response.status_code == 404
+    assert time.perf_counter() - started < server_module.DB_QUEUE_TIMEOUT
+
+
+def test_the_slot_is_released_before_the_response_is_written(full_warehouse, tmp_path,
+                                                             monkeypatch):
+    """The bug both PR reviewers found in the first version of this bound.
+
+    The slot used to wrap `json.dumps` and the blocking socket write, so a
+    client that stopped reading held a slot for the life of its connection.
+    Four of those and the demo was down -- an outage dressed as a safety
+    feature. With serialisation made slow and only one slot, three concurrent
+    requests can all succeed only if the slot is given back first.
+    """
+    source, _ = full_warehouse
+    target = tmp_path / "public.duckdb"
+    spans.export_public(source, target)
+    monkeypatch.setattr(server_module, "DB_MAX_CONCURRENT", 1)
+    monkeypatch.setattr(server_module, "DB_QUEUE_TIMEOUT", 10.0)
+
+    real_dumps = server_module.json.dumps
+
+    def slow_dumps(*a, **k):
+        time.sleep(0.8)
+        return real_dumps(*a, **k)
+
+    monkeypatch.setattr(server_module.json, "dumps", slow_dumps)
 
     server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(target))
     threading.Thread(target=server.serve_forever, daemon=True).start()
     url = f"http://127.0.0.1:{server.server_address[1]}"
     try:
         codes = []
-
-        def hit():
-            try:
-                codes.append(requests.get(
-                    f"{url}/api/variants", params={"gene": "TESTGENE", "on": "2019-01-02"},
-                    timeout=30).status_code)
-            except Exception:                          # noqa: BLE001
-                codes.append(None)
-
-        threads = [threading.Thread(target=hit) for _ in range(12)]
+        threads = [threading.Thread(target=lambda: codes.append(
+            requests.get(f"{url}/api/variants",
+                         params={"gene": "TESTGENE", "on": "2019-01-02"},
+                         timeout=30).status_code)) for _ in range(3)]
         for t in threads:
             t.start()
         for t in threads:
             t.join()
-        assert 200 in codes, "with one slot, someone must still be served"
-        assert set(codes) <= {200, 503}, f"unexpected statuses: {sorted(set(codes) - {200, 503})}"
-        # and it recovers once the rush is over
-        assert requests.get(f"{url}/api/context", timeout=10).status_code == 200
+        assert set(codes) == {200}, (
+            f"got {sorted(codes)}: a slot is held through serialisation, so a "
+            "slow client can deny it to everyone else"
+        )
     finally:
         server.shutdown()
         server.server_close()
 
 
-def test_the_health_probe_does_not_queue_behind_queries(full_warehouse, tmp_path,
-                                                        monkeypatch):
-    """A probe that waits behind a heavy gene reports the container unhealthy
-    for being busy, which gets it restarted at exactly the wrong moment."""
+def test_the_probe_stops_querying_after_the_first_call(public_server, monkeypatch):
+    """The warehouse is read-only and cannot change under a running server, so
+    the verdict is a constant. A probe that re-queries on every poll is a
+    database path sitting outside the concurrency bound."""
+    url, _ = public_server
+    assert requests.get(f"{url}/health", timeout=10).status_code == 200
+
+    calls = []
+    real = server_module.queries.timeline_start
+    monkeypatch.setattr(server_module.queries, "timeline_start",
+                        lambda c: (calls.append(1), real(c))[1])
+    for _ in range(5):
+        assert requests.get(f"{url}/health", timeout=10).status_code == 200
+    assert calls == [], f"the probe queried {len(calls)} more times after the first"
+
+
+def test_the_context_is_warmed_before_the_port_opens(tmp_path, full_warehouse):
+    """2.7s on one vCPU, and it used to be charged to whoever arrived first --
+    which on a scale-to-zero deployment is every visitor who wakes it."""
     source, _ = full_warehouse
     target = tmp_path / "public.duckdb"
     spans.export_public(source, target)
-    monkeypatch.setattr(server_module, "DB_MAX_CONCURRENT", 1)
-    monkeypatch.setattr(server_module, "DB_QUEUE_TIMEOUT", 30.0)
 
-    server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(target))
+    handler = make_handler(target)
+    assert hasattr(handler, "warm"), "serve() needs a way to pay this cost up front"
+    handler.warm()
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
-    url = f"http://127.0.0.1:{server.server_address[1]}"
     try:
-        busy = [threading.Thread(target=lambda: requests.get(
-            f"{url}/api/variants", params={"gene": "TESTGENE", "on": "2019-01-02"},
-            timeout=30)) for _ in range(6)]
-        for t in busy:
-            t.start()
-        assert requests.get(f"{url}/health", timeout=10).status_code == 200
-        for t in busy:
-            t.join()
+        started = time.perf_counter()
+        response = requests.get(
+            f"http://127.0.0.1:{server.server_address[1]}/api/context", timeout=30)
+        elapsed = time.perf_counter() - started
+        assert response.status_code == 200
+        assert elapsed < 1.0, f"first request took {elapsed:.2f}s; the cache was not warm"
     finally:
         server.shutdown()
         server.server_close()
