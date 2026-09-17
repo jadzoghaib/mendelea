@@ -24,6 +24,17 @@ primary_region = "mad"
   MENDELEA_RATE_PER_MINUTE = "120"
   MENDELEA_RATE_BURST = "40"
 
+  # Set explicitly because the defaults are sized for a machine DuckDB has to
+  # itself. It reads the cgroup limit, claims 80% of it, and starts one worker
+  # per visible CPU -- on this VM that was 409 MB of the 512 and 16 workers on
+  # one shared core, which OOMKilled the container under 120 concurrent
+  # visitors. Measured after capping: 150 concurrent all served, 198 MB peak.
+  #
+  # Raise all three together on a bigger VM; they are one budget.
+  MENDELEA_DB_MEMORY_LIMIT = "192MB"
+  MENDELEA_DB_THREADS = "2"
+  MENDELEA_DB_MAX_CONCURRENT = "4"
+
 [http_service]
   internal_port = 8000
   force_https = true

@@ -23,7 +23,7 @@
   <img alt="Python 3.11+" src="https://img.shields.io/badge/python-3.11%2B-1f2937?style=flat-square&logo=python&logoColor=7fd6c2">
   <img alt="DuckDB" src="https://img.shields.io/badge/duckdb-in--process-1f2937?style=flat-square&logo=duckdb&logoColor=7fd6c2">
   <img alt="Runtime dependencies: 2" src="https://img.shields.io/badge/runtime%20deps-2-1f2937?style=flat-square">
-  <img alt="Tests 266 offline plus 6 live" src="https://img.shields.io/badge/tests-266%20offline%20%2B%206%20live-1f2937?style=flat-square&logo=pytest&logoColor=1fa98a">
+  <img alt="Tests 271 offline plus 6 live" src="https://img.shields.io/badge/tests-271%20offline%20%2B%206%20live-1f2937?style=flat-square&logo=pytest&logoColor=1fa98a">
   <img alt="Phase 0 gate: passed" src="https://img.shields.io/badge/phase%200%20gate-passed%204.6%25-1f2937?style=flat-square">
   <img alt="Research use only" src="https://img.shields.io/badge/research%20use%20only-not%20a%20medical%20device-1f2937?style=flat-square&logoColor=d94c4c">
 </p>
@@ -344,7 +344,23 @@ is missing. Hugging Face Spaces runs the same image but needs `app_port: 8000` i
 `README.md` front matter, since it expects 7860 by default; it is free, sleeps when idle, and
 the URL reads as a research demo rather than a product.
 
-Three things the demo needed before it could face the internet, all now in place:
+**What it survives, measured rather than assumed.** In a 512 MB container, the size `fly.toml`
+asks for, against the heaviest gene in the panel:
+
+| simultaneous visitors | result | peak memory | median |
+|---|---|---|---|
+| 20 | all served | 60 MB | 0.5 s |
+| 60 | all served | 130 MB | 1.5 s |
+| 150 | all served | 198 MB | 4.2 s |
+
+Those numbers are the *second* set. The first attempt was OOM-killed at 120, because DuckDB
+sizes itself for a machine it has to itself: it reads the cgroup limit, claims 80% of it, and
+starts one worker per visible CPU — 409 MB of the 512 and 16 workers on one shared core. All
+three of its budgets are now set explicitly, and a bounded number of queries run at once, so
+overload queues and then sheds with a 503 instead of taking the container down. Raise them
+together on a bigger VM; they are one budget, not three knobs.
+
+Four things the demo needed before it could face the internet, all now in place:
 
 - **A rate limiter.** Every endpoint is read-only, so the risk was never damage, it was cost:
   one `/api/variants` call scans the span table. A token bucket per client, in-process, with the
@@ -355,6 +371,10 @@ Three things the demo needed before it could face the internet, all now in place
   that expensive is the thing that makes a container look unhealthy.
 - **Headers that assume hostility.** The page loads no script, style or image from anywhere else,
   so the content security policy says exactly that. Injected markup has nowhere to send anything.
+- **A bound on total work, not just per-client work.** The rate limiter caps what one visitor
+  can ask for; it says nothing about what a hundred visitors ask for together, which is the
+  thing that actually exhausts the box. Queries run a few at a time, the rest wait briefly,
+  and a genuine rush is told to come back rather than held open until the browser gives up.
 
 Behind a proxy, set `MENDELEA_TRUSTED_IP_HEADER` to the header that proxy actually sets
 (`Fly-Client-IP` on Fly). Unset, the limiter reads the socket, which behind a proxy is one
@@ -407,7 +427,7 @@ losing, and it is the argument for the managed deployment rather than a laptop.
 ## Verification
 
 ```powershell
-pytest                      # 266 offline, 6 live deselected
+pytest                      # 271 offline, 6 live deselected
 pytest -m network           # the live path: a real ingest, checked against ClinVar's API
 mendelea provenance --panel hereditary-cancer   # checksum + reproducibility audit
 ```
