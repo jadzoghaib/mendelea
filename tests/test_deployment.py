@@ -458,21 +458,22 @@ def test_the_health_probe_does_not_queue_behind_queries(blocked):
     gets it restarted at precisely the wrong moment. The slot is held here, so
     a prompt 200 can only mean the probe never asked for one."""
     url, _ = blocked
-    started = time.perf_counter()
+    # Structural rather than timed: a request that queued for this slot would
+    # have timed out and answered 503, so the 200 is itself the proof. A
+    # wall-clock budget on a real round trip only adds CI flakiness.
     response = requests.get(f"{url}/health", timeout=30)
     assert response.status_code == 200
-    assert time.perf_counter() - started < server_module.DB_QUEUE_TIMEOUT, \
-        "the probe waited for a query slot"
+    assert response.json()["timeline"] is True
 
 
 def test_an_unknown_path_is_404_without_taking_a_slot(blocked):
     """Otherwise a scanner asking for /favicon.ico queues for a database slot
     it will never use, and gets a 503 under load instead of a prompt 404."""
     url, _ = blocked
-    started = time.perf_counter()
+    # Also structural: had it entered the queue it would be 503, not 404.
     response = requests.get(f"{url}/favicon.ico", timeout=30)
     assert response.status_code == 404
-    assert time.perf_counter() - started < server_module.DB_QUEUE_TIMEOUT
+    assert response.json() == {"error": "no such endpoint"}
 
 
 def test_the_slot_is_released_before_the_response_is_written(full_warehouse, tmp_path,
@@ -488,8 +489,13 @@ def test_the_slot_is_released_before_the_response_is_written(full_warehouse, tmp
     source, _ = full_warehouse
     target = tmp_path / "public.duckdb"
     spans.export_public(source, target)
+    # The queue timeout must be *shorter* than the serialisation it is racing,
+    # or the test cannot fail: with a 10s timeout and a 0.8s dump, a queued
+    # caller waits 0.8s and still gets its 200 whether or not the slot was
+    # held. At 0.25s against 0.8s, holding the slot through serialisation
+    # forces a 503 and releasing it does not.
     monkeypatch.setattr(server_module, "DB_MAX_CONCURRENT", 1)
-    monkeypatch.setattr(server_module, "DB_QUEUE_TIMEOUT", 10.0)
+    monkeypatch.setattr(server_module, "DB_QUEUE_TIMEOUT", 0.25)
 
     real_dumps = server_module.json.dumps
 
@@ -568,3 +574,35 @@ def test_the_health_probe_is_never_throttled(throttled):
     for _ in range(12):
         requests.get(f"{throttled}/api/context", timeout=10)
     assert requests.get(f"{throttled}/health", timeout=10).status_code == 200
+
+
+def test_a_warehouse_that_cannot_be_warmed_still_serves(tmp_path, monkeypatch, capsys):
+    """Moving the cold-start cost before the port binds moved the blast radius
+    with it: what used to be one failed request would become a boot failure,
+    and on a platform that restarts containers that is a crash loop rather
+    than a degraded demo."""
+    duckdb.connect(str(tmp_path / "w.duckdb")).close()
+    handler = make_handler(tmp_path / "w.duckdb")
+
+    def explode():
+        raise RuntimeError("assertion_dense is not readable")
+
+    handler.warm = staticmethod(explode)
+    served = threading.Event()
+
+    class FakeServer:
+        def __init__(self, *a, **k):
+            pass
+
+        def serve_forever(self):
+            served.set()
+
+        def server_close(self):
+            pass
+
+    monkeypatch.setattr(server_module, "make_handler", lambda _w: handler)
+    monkeypatch.setattr(server_module, "ThreadingHTTPServer", FakeServer)
+    server_module.serve(tmp_path / "w.duckdb")
+
+    assert served.is_set(), "a failed warm-up must not stop the server starting"
+    assert "could not be read ahead of time" in capsys.readouterr().out

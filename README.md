@@ -23,7 +23,7 @@
   <img alt="Python 3.11+" src="https://img.shields.io/badge/python-3.11%2B-1f2937?style=flat-square&logo=python&logoColor=7fd6c2">
   <img alt="DuckDB" src="https://img.shields.io/badge/duckdb-in--process-1f2937?style=flat-square&logo=duckdb&logoColor=7fd6c2">
   <img alt="Runtime dependencies: 2" src="https://img.shields.io/badge/runtime%20deps-2-1f2937?style=flat-square">
-  <img alt="Tests 276 offline plus 6 live" src="https://img.shields.io/badge/tests-276%20offline%20%2B%206%20live-1f2937?style=flat-square&logo=pytest&logoColor=1fa98a">
+  <img alt="Tests 277 offline plus 6 live" src="https://img.shields.io/badge/tests-277%20offline%20%2B%206%20live-1f2937?style=flat-square&logo=pytest&logoColor=1fa98a">
   <img alt="Phase 0 gate: passed" src="https://img.shields.io/badge/phase%200%20gate-passed%204.6%25-1f2937?style=flat-square">
   <img alt="Research use only" src="https://img.shields.io/badge/research%20use%20only-not%20a%20medical%20device-1f2937?style=flat-square&logoColor=d94c4c">
 </p>
@@ -443,7 +443,7 @@ losing, and it is the argument for the managed deployment rather than a laptop.
 ## Verification
 
 ```powershell
-pytest                      # 276 offline, 6 live deselected
+pytest                      # 277 offline, 6 live deselected
 pytest -m network           # the live path: a real ingest, checked against ClinVar's API
 mendelea provenance --panel hereditary-cancer   # checksum + reproducibility audit
 ```
