@@ -433,6 +433,13 @@ def make_handler(warehouse: Path):
 
             except ApiError as exc:
                 self._json({"error": exc.message}, exc.status)
+            except (TimeoutError, ConnectionError, BrokenPipeError) as exc:
+                # The client went away, or stopped reading until the socket
+                # timeout fired. There is nobody to send a 500 to, and trying
+                # would block this thread for another full timeout on a socket
+                # already known to be dead. Close and move on.
+                log.debug("client connection lost serving %s: %s", self.path, exc)
+                self.close_connection = True
             except Exception:  # noqa: BLE001 - never leak a traceback, nor its message
                 # The message can carry SQL fragments and file paths. It goes
                 # to the server log, where whoever is running the demo can
@@ -450,7 +457,17 @@ def serve(warehouse: Path, host: str = "127.0.0.1", port: int = 8000) -> None:
     # and it was being paid by whoever arrived first. On a scale-to-zero
     # deployment that is every visitor who wakes the machine. Paid here it
     # lands inside the platform's start-up grace period instead.
-    handler.warm()
+    #
+    # Failing softly, because this moved the work to before the port binds:
+    # an unreadable `assertion_dense` used to surface as one failed request
+    # and would now kill the process at boot, which on a platform that
+    # restarts containers is a crash loop instead of a degraded demo. The
+    # request path re-raises anyway, and /health still reports the truth.
+    try:
+        handler.warm()
+    except Exception:  # noqa: BLE001 - serving degraded beats not serving
+        log.exception("could not warm the context; first request will pay for it")
+        print("  ! warehouse could not be read ahead of time; see the log")
     server = ThreadingHTTPServer((host, port), handler)
     print(f"  Mendelea time machine  ->  http://{host}:{port}")
     print("  read-only, public ClinVar data, Ctrl-C to stop\n")
