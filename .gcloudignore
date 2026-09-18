@@ -1,0 +1,36 @@
+# Without this file, `gcloud run deploy --source .` falls back to .gitignore --
+# which excludes *.duckdb, which is the whole artefact the image is built
+# around. Cloud Build would receive a context with no warehouse in it and the
+# Dockerfile's COPY would fail. This mirrors .dockerignore for that reason:
+# the two ignore lists have to agree about the one file that is deliberately
+# kept out of git and deliberately put into the image.
+
+.git/
+.github/
+.pytest_cache/
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+
+docs/
+tests/
+deploy/
+CLAUDE.md
+
+# Every DuckDB file except the exported artefact, which the Dockerfile copies
+# in. The working warehouse is hundreds of megabytes of build intermediates
+# and both private planes; it must never reach a build context.
+*.duckdb
+*.duckdb.wal
+!mendelea-public.duckdb
+
+*.parquet
+*.parquet.partial
+*.manifest.json
+*.csv
+*.json
+!panels/*.json
