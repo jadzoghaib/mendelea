@@ -39,6 +39,12 @@ primary_region = "mad"
   MENDELEA_DB_THREADS = "2"
   MENDELEA_DB_MAX_CONCURRENT = "4"
 
+  # The detection threshold is a share of the corpus, so it depends on the
+  # panel. The 2023 re-aggregation is 6,083 variants either way: 13.3% of the
+  # five-gene panel the 5% default was chosen against, and 4.05% of this one.
+  # Left at the default, this panel reports no policy event at all.
+  MENDELEA_POLICY_THRESHOLD = "0.03"
+
 [http_service]
   internal_port = 8000
   force_https = true

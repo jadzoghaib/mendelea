@@ -74,6 +74,17 @@ DB_MAX_CONCURRENT = int(os.environ.get("MENDELEA_DB_MAX_CONCURRENT", "4"))
 DB_QUEUE_TIMEOUT = float(os.environ.get("MENDELEA_DB_QUEUE_TIMEOUT", "20"))
 SOCKET_TIMEOUT = float(os.environ.get("MENDELEA_SOCKET_TIMEOUT", "30"))
 
+# The share of the corpus one transition must sweep in a single release step
+# to be called a relabelling rather than evidence. Panel-specific by nature,
+# because the corpus is the denominator: the 2023 re-aggregation is 6,083
+# variants either way, 13.3% of the five-gene panel and 4.05% of the
+# thirty-one gene one. `spike` has always taken this as a flag; the web layer
+# had no way to set it, so a denser ingest left the demo silently reporting
+# no event at all.
+POLICY_THRESHOLD = float(
+    os.environ.get("MENDELEA_POLICY_THRESHOLD", str(policy.DEFAULT_THRESHOLD))
+)
+
 # Gene symbols reach SQL as a bound parameter, but bound or not we only ever
 # want to see something that looks like a gene symbol.
 SAFE_SYMBOL = re.compile(r"^[A-Za-z0-9_.\-]{1,32}$")
@@ -163,7 +174,7 @@ def make_handler(warehouse: Path):
                 # gene off an empty baseline and the page called that "no
                 # timeline".
                 baseline = queries.timeline_start(c)
-                events = queries.policy_events(c)
+                events = queries.policy_events(c, POLICY_THRESHOLD)
                 cache["events"] = events
                 cache["context"] = {
                     "panel": panel,
