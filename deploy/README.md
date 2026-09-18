@@ -64,10 +64,18 @@ certificate, you restart the container when the box reboots.
 
 ```bash
 sudo docker run -d --restart=always -p 80:8000 \
-  -e MENDELEA_TRUSTED_IP_HEADER=X-Forwarded-For \
   -e MENDELEA_DB_THREADS=4 -e MENDELEA_DB_MAX_CONCURRENT=8 \
   mendelea:latest
 ```
+
+**No `MENDELEA_TRUSTED_IP_HEADER` here, deliberately.** The container is exposed directly,
+so there is no proxy adding that header and anything arriving in it came from the caller.
+Trusting it would let anyone mint a fresh rate-limit bucket per request by changing one
+line, which is worse than having no limiter at all — it looks like protection and is not.
+Unset, the limiter reads the socket, which on a directly exposed port is the real client.
+
+Put a proxy in front (Caddy and nginx both terminate TLS in a few lines) and *then* set
+the header to whatever that proxy sets. You will want one anyway: this serves plain HTTP.
 
 Worth it if the demo becomes something you leave running and point people at. Not worth
 it for a link you paste into an email.

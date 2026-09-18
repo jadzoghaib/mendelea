@@ -636,3 +636,58 @@ def test_a_threshold_above_the_sweep_finds_nothing(full_warehouse, tmp_path):
         assert queries.policy_events(connection, 0.99) == [], "nothing sweeps 99%"
     finally:
         connection.close()
+
+
+# --------------------------------------------------------------------------
+# The ignore lists, which decide whether a build gets its data at all
+# --------------------------------------------------------------------------
+
+
+def _ignored_by(ignore_file: str, name: str) -> bool:
+    """Last matching pattern wins; a leading ! negates. Docker and gcloud
+    both work this way."""
+    from pathlib import Path as _P
+    from pathlib import PurePath
+
+    verdict = False
+    for line in _P(ignore_file).read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        negated = line.startswith("!")
+        pattern = line[1:] if negated else line
+        if PurePath(name).match(pattern):
+            verdict = not negated
+    return verdict
+
+
+@pytest.mark.parametrize("ignore_file", [".dockerignore", ".gcloudignore"])
+def test_the_build_context_keeps_the_artefact_and_drops_the_warehouse(ignore_file):
+    """`gcloud run deploy --source .` falls back to .gitignore when there is
+    no .gcloudignore, and .gitignore excludes *.duckdb -- which is the entire
+    artefact the image is built around. The build would reach `COPY
+    mendelea-public.duckdb` with no such file in the context.
+
+    The working warehouse must stay out just as firmly: it carries both
+    private planes and is several hundred megabytes.
+    """
+    assert not _ignored_by(ignore_file, "mendelea-public.duckdb"), \
+        f"{ignore_file} drops the artefact; the image cannot be built"
+    assert _ignored_by(ignore_file, "mendelea.duckdb"), \
+        f"{ignore_file} would upload the working warehouse, private planes and all"
+    assert not _ignored_by(ignore_file, "panels/spike.json"), \
+        f"{ignore_file} drops the panel definitions the gene picker needs"
+
+
+def test_the_image_sets_a_threshold_that_matches_the_panel_it_ships():
+    """The threshold is a share of the corpus and the image ships one panel.
+
+    Left at the 5% default the 31-gene timeline reports no policy event at
+    all, so a plain `docker run` would lose the relabelling story -- the
+    detector's own failure mode, silently.
+    """
+    from pathlib import Path as _P
+
+    dockerfile = _P("Dockerfile").read_text(encoding="utf-8")
+    assert "MENDELEA_POLICY_THRESHOLD" in dockerfile, \
+        "the image ships a panel the default threshold cannot see an event in"

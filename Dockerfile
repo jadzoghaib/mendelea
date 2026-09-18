@@ -69,7 +69,13 @@ ENV MENDELEA_DATA_DIR=/data \
     MENDELEA_RATE_PER_MINUTE=120 \
     MENDELEA_RATE_BURST=40 \
     PYTHONUNBUFFERED=1 \
-    PORT=8000
+    PORT=8000 \
+    # Set here because the image ships a specific panel, and the threshold is
+    # a share of that panel's corpus. The 2023 re-aggregation is 4.05% of the
+    # 31-gene timeline baked in below, so the 5% default finds nothing and the
+    # demo silently loses the relabelling story. Overridden per platform where
+    # the panel differs.
+    MENDELEA_POLICY_THRESHOLD=0.03
 
 USER mendelea
 EXPOSE 8000
