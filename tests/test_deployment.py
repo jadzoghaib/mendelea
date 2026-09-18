@@ -606,3 +606,33 @@ def test_a_warehouse_that_cannot_be_warmed_still_serves(tmp_path, monkeypatch, c
 
     assert served.is_set(), "a failed warm-up must not stop the server starting"
     assert "could not be read ahead of time" in capsys.readouterr().out
+
+
+def test_the_policy_threshold_is_configurable_from_the_web_layer(public_server):
+    """It is a share of the corpus, so it depends on the panel.
+
+    The 2023 re-aggregation is 6,083 variants either way: 13.3% of the
+    five-gene panel and 4.05% of the thirty-one gene one. `spike` has taken
+    this as a flag from the start; the web layer had none, so densifying the
+    ingest left the demo reporting no event at all -- the detector's own
+    failure mode, turned on itself.
+    """
+    url, _ = public_server
+    assert server_module.POLICY_THRESHOLD > 0
+    # the fixture's synthetic sweep is caught at the default
+    payload = requests.get(f"{url}/api/context", timeout=10).json()
+    assert payload["policy_events"], "the fixture sweep should trip the default"
+
+
+def test_a_threshold_above_the_sweep_finds_nothing(full_warehouse, tmp_path):
+    """The knob has to actually reach the detector, not just exist."""
+    source, _ = full_warehouse
+    target = tmp_path / "public.duckdb"
+    spans.export_public(source, target)
+    connection = duckdb.connect(str(target), read_only=True)
+    try:
+        from mendelea.web import queries
+        assert queries.policy_events(connection, 0.05), "sweep is detectable at 5%"
+        assert queries.policy_events(connection, 0.99) == [], "nothing sweeps 99%"
+    finally:
+        connection.close()

@@ -73,7 +73,8 @@ def timeline_start(connection) -> str | None:
     return str(row[0]) if row and row[0] else None
 
 
-def policy_events(connection) -> list[policy.PolicyEvent]:
+def policy_events(connection,
+                  threshold: float = policy.DEFAULT_THRESHOLD) -> list[policy.PolicyEvent]:
     """Detected policy events, or none if the warehouse cannot say.
 
     Detection reads `assertion_dense`, a build artefact `spans.build` leaves
@@ -84,9 +85,17 @@ def policy_events(connection) -> list[policy.PolicyEvent]:
     Only a missing table is tolerated. Catching every DuckDB error here would
     turn a broken `DETECT_SQL` into a silently disabled safety feature, and
     the whole point of this one is that it fails loudly enough to be noticed.
+
+    The threshold is a parameter because it is a share of the corpus, and the
+    corpus depends on the panel. The 2023 re-aggregation is 6,083 variants
+    either way: 13.3% of the five-gene panel and 4.05% of the thirty-one gene
+    one, so a single default cannot catch both. `spike` has had this as a flag
+    from the start; without it here the demo silently stopped reporting an
+    event it had found, which is the failure mode this detector exists to
+    prevent, turned on itself.
     """
     try:
-        return policy.detect(connection)
+        return policy.detect(connection, threshold=threshold)
     except duckdb.CatalogException:
         return []
 

@@ -68,16 +68,22 @@ ENV MENDELEA_DATA_DIR=/data \
     MENDELEA_PANEL_DIR=/app/panels \
     MENDELEA_RATE_PER_MINUTE=120 \
     MENDELEA_RATE_BURST=40 \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    PORT=8000
 
 USER mendelea
 EXPOSE 8000
 
 # The probe asks the database one question rather than building the context,
-# which would be most of a second on a cold process.
+# which would be most of a second on a cold process. It reads $PORT for the
+# same reason the command below does.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD python -c "import urllib.request,sys,json; \
-r=json.load(urllib.request.urlopen('http://127.0.0.1:8000/health',timeout=4)); \
+  CMD python -c "import os,urllib.request,sys,json; \
+r=json.load(urllib.request.urlopen(f\"http://127.0.0.1:{os.environ['PORT']}/health\",timeout=4)); \
 sys.exit(0 if r.get('timeline') else 1)"
 
-CMD ["mendelea", "serve", "--host", "0.0.0.0", "--port", "8000"]
+# Shell form on purpose, so $PORT is expanded at runtime. Cloud Run assigns the
+# port and expects the container to listen on whatever it sets; a hardcoded
+# 8000 is a container that never passes its first health check there. Every
+# other platform gets 8000 from the default above.
+CMD exec mendelea serve --host 0.0.0.0 --port "$PORT"

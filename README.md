@@ -23,7 +23,7 @@
   <img alt="Python 3.11+" src="https://img.shields.io/badge/python-3.11%2B-1f2937?style=flat-square&logo=python&logoColor=7fd6c2">
   <img alt="DuckDB" src="https://img.shields.io/badge/duckdb-in--process-1f2937?style=flat-square&logo=duckdb&logoColor=7fd6c2">
   <img alt="Runtime dependencies: 2" src="https://img.shields.io/badge/runtime%20deps-2-1f2937?style=flat-square">
-  <img alt="Tests 277 offline plus 6 live" src="https://img.shields.io/badge/tests-277%20offline%20%2B%206%20live-1f2937?style=flat-square&logo=pytest&logoColor=1fa98a">
+  <img alt="Tests 279 offline plus 6 live" src="https://img.shields.io/badge/tests-279%20offline%20%2B%206%20live-1f2937?style=flat-square&logo=pytest&logoColor=1fa98a">
   <img alt="Phase 0 gate: passed" src="https://img.shields.io/badge/phase%200%20gate-passed%204.6%25-1f2937?style=flat-square">
   <img alt="Research use only" src="https://img.shields.io/badge/research%20use%20only-not%20a%20medical%20device-1f2937?style=flat-square&logoColor=d94c4c">
 </p>
@@ -54,7 +54,7 @@ Measured on public ClinVar data, before any customer, on a 31-gene hereditary ca
 eight annual releases:
 
 ```
-  MENDELEA PHASE 0  --  panel 'hereditary-cancer'
+  MENDELEA PHASE 0  --  panel 'hereditary-cancer'   (18 releases)
   2018-12-25  ->  2025-12-28
   --------------------------------------------------------------
   variants classified at baseline        62,979
@@ -67,9 +67,9 @@ eight annual releases:
     -> retracted from ClinVar               206
   --------------------------------------------------------------
   POLICY EVENTS DETECTED -- database relabelling, not evidence:
-    ! 2022-12-24 -> 2023-12-30: UNCERTAIN -> CONFLICTING 7,446 variants (5.3% of corpus)
-  of the moves above, policy-suspect         3,868
-  movement rate, policy-adjusted               26.7%  (raw 40.1%)
+    ! 2023-02-26 -> 2023-04-30: UNCERTAIN -> CONFLICTING 6,083 variants (4.1% of corpus)
+  of the moves above, policy-suspect         2,746
+  movement rate, policy-adjusted               30.5%  (raw 40.1%)
   --------------------------------------------------------------
   ACTIONABLE movement rate                      4.6%
   Gate: continue if actionable >= 2.0%  [PASS]
@@ -81,6 +81,12 @@ nothing it can act on, and 7,446 of those moved in a single release step because
 it aggregates submissions rather than because anyone revised anything. Reporting that as movement
 would send a customer to re-review thousands of cases for nothing, and it would be the last thing
 they ever let the tool do.
+
+The timeline was deliberately densified through 2022 and 2023 to pin that event down. At annual
+spacing it read as 7,446 variants smeared across a year, so the adjusted rate was a floor rather
+than a figure. At two-month spacing it resolves to **6,083 variants between 2023-02-26 and
+2023-04-30** — a nine-week window running at 97 variants a day against 0.2 to 17 for the steps
+either side of it — and the adjusted rate is **30.5%**, not the 26.7% the coarse grid implied.
 
 That attribution is a heuristic on cohort behaviour, not a reading of ClinVar's release notes. The
 detector finds a transition sweeping an implausible share of the corpus in one release step and
@@ -260,7 +266,7 @@ Each phase has a gate that is not passed on optimism.
 | Phase | Deliverable | Gate | State |
 |---|---|---|---|
 | **0** | Movement measured on public data, no customer needed | actionable movement ≥ 2% | **passed**, 4.6% and 7.2% on two panels |
-| **1** | Evidence timeline, point-in-time queries correct | agreement with ClinVar on hand-checked variants | automated in `test_live_clinvar.py`; density still thin at 8–18 releases |
+| **1** | Evidence timeline, point-in-time queries correct | agreement with ClinVar on hand-checked variants | automated in `test_live_clinvar.py`; 18 releases, two-monthly through the 2023 event |
 | **2** | Time-machine demo, public | 10 laboratory conversations booked | **product ready**, conversations are the open item |
 | **3** | Case plane, tenant isolation, server-side ledger | first paid retrospective audit delivered | built and tested; unsold |
 
@@ -443,7 +449,7 @@ losing, and it is the argument for the managed deployment rather than a laptop.
 ## Verification
 
 ```powershell
-pytest                      # 277 offline, 6 live deselected
+pytest                      # 279 offline, 6 live deselected
 pytest -m network           # the live path: a real ingest, checked against ClinVar's API
 mendelea provenance --panel hereditary-cancer   # checksum + reproducibility audit
 ```
@@ -474,11 +480,19 @@ Read these before quoting any number this produces.
   not, because true VRS resolves the reference sequence through SeqRepo, a multi-gigabyte dependency.
   They are namespaced `mendelea:VA.` and must not be published as VRS IDs. What is claimed is
   stability, not federation.
-- **Policy-event detection is sensitive to snapshot density**, and so is the attribution. At annual
-  density the detected event spans a whole year, so a year of ordinary drift is subtracted along with
-  the sweep. The 26.7% adjusted figure is a floor; the 36.8% measured against a nine-week window on
-  the denser panel is better resolved. The actionable rate is immune to both, which is why it is the
-  one quoted.
+- **The detection threshold is panel-specific, and the default no longer fits this panel.** It is a
+  share of the corpus, so the corpus is the denominator: the same 6,083-variant re-aggregation is
+  13.3% of the five-gene panel and 4.05% of the thirty-one gene one. At the 5% default the denser
+  timeline reports *no event at all* — a detector that exists to stop a silent misreading, failing
+  silently. Pass `--policy-threshold 0.03` to `spike`, or set `MENDELEA_POLICY_THRESHOLD` for the
+  server. A rule scaled to each timeline's own steps rather than to an absolute share would fix this
+  properly; a first attempt flagged two `LIKELY_BENIGN → BENIGN` steps that could not be cheaply
+  adjudicated, so it is not shipped. **Check what the detector reports before quoting an adjusted
+  rate on a new panel.**
+- **Snapshot density bounds the attribution too.** At annual spacing the event smears across a year
+  and a year of ordinary drift is subtracted with it. That is why this panel was densified: 26.7%
+  was a floor, 30.5% is the measurement. The actionable rate is immune to all of this, which is why
+  it is the one quoted.
 - **Absence is only meaningful within a panel.** Spans are built per panel over identical gene
   regions. Change the gene list and `ABSENT` transitions become artefacts.
 - **Terminology drift is absorbed, not eliminated.** ClinVar renamed `Conflicting_interpretations_of_pathogenicity`
