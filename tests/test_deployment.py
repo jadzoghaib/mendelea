@@ -608,20 +608,41 @@ def test_a_warehouse_that_cannot_be_warmed_still_serves(tmp_path, monkeypatch, c
     assert "could not be read ahead of time" in capsys.readouterr().out
 
 
-def test_the_policy_threshold_is_configurable_from_the_web_layer(public_server):
-    """It is a share of the corpus, so it depends on the panel.
+def test_the_policy_threshold_reaches_the_served_context(full_warehouse, tmp_path,
+                                                         monkeypatch):
+    """The knob has to change what a visitor is shown, not merely exist.
 
-    The 2023 re-aggregation is 6,083 variants either way: 13.3% of the
-    five-gene panel and 4.05% of the thirty-one gene one. `spike` has taken
-    this as a flag from the start; the web layer had none, so densifying the
-    ingest left the demo reporting no event at all -- the detector's own
-    failure mode, turned on itself.
+    The first version of this test asserted that the fixture's sweep tripped
+    the default and that the constant was positive, which would have passed
+    with the threshold wired to nothing at all. It is a share of the corpus,
+    so it depends on the panel: the 2023 re-aggregation sweeps 5,843 variants
+    of the five-gene panel, 13.3% of it, and 6,083 of the thirty-one gene
+    panel, only 4.05% of that far larger corpus. `spike` has taken it as a
+    flag from the start; the web layer had none, so densifying the ingest left
+    the demo reporting no event at all -- this detector's own failure mode,
+    turned on itself.
     """
-    url, _ = public_server
-    assert server_module.POLICY_THRESHOLD > 0
-    # the fixture's synthetic sweep is caught at the default
-    payload = requests.get(f"{url}/api/context", timeout=10).json()
-    assert payload["policy_events"], "the fixture sweep should trip the default"
+    source, _ = full_warehouse
+    target = tmp_path / "public.duckdb"
+    spans.export_public(source, target)
+
+    def context_events(threshold):
+        monkeypatch.setattr(server_module, "POLICY_THRESHOLD", threshold)
+        server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(target))
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            return requests.get(
+                f"http://127.0.0.1:{server.server_address[1]}/api/context",
+                timeout=20).json()["policy_events"]
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    assert context_events(0.05), "the fixture sweep is detectable at 5%"
+    assert context_events(0.99) == [], (
+        "raising the threshold above the sweep must reach the served context; "
+        "if this still reports events the knob is not wired through"
+    )
 
 
 def test_a_threshold_above_the_sweep_finds_nothing(full_warehouse, tmp_path):

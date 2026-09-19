@@ -40,8 +40,9 @@ primary_region = "mad"
   MENDELEA_DB_MAX_CONCURRENT = "4"
 
   # The detection threshold is a share of the corpus, so it depends on the
-  # panel. The 2023 re-aggregation is 6,083 variants either way: 13.3% of the
-  # five-gene panel the 5% default was chosen against, and 4.05% of this one.
+  # panel. The 2023 re-aggregation sweeps 5,843 variants of the five-gene panel
+  # the 5% default was chosen against, 13.3% of it; on this panel it sweeps
+  # 6,083, which is only 4.05% of a corpus three times the size.
   # Left at the default, this panel reports no policy event at all.
   MENDELEA_POLICY_THRESHOLD = "0.03"
 
@@ -49,7 +50,7 @@ primary_region = "mad"
   internal_port = 8000
   force_https = true
   # Scale to zero. The demo is shown in meetings, not hammered continuously,
-  # and a cold start is a container with a 58 MB file in it.
+  # and a cold start is a container with a 69 MB file in it.
   auto_stop_machines = "stop"
   auto_start_machines = true
   min_machines_running = 0
