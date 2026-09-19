@@ -64,18 +64,21 @@ COPY panels/ /app/panels/
 RUN mkdir -p /data && chown mendelea:mendelea /data
 COPY --chown=mendelea:mendelea mendelea-public.duckdb /data/mendelea.duckdb
 
+# MENDELEA_POLICY_THRESHOLD is set here because the image ships a specific
+# panel and the threshold is a share of that panel's corpus. The 2023
+# re-aggregation sweeps 6,083 variants of the 31-gene timeline copied in
+# below, which is 4.05% of it, so the 5% default finds nothing and the demo
+# silently loses the relabelling story. Override it if the panel differs.
+#
+# Kept above the instruction rather than inside it: Docker strips whole-line
+# comments from a continued ENV and this built correctly either way, but a
+# reader should not have to know that to be sure.
 ENV MENDELEA_DATA_DIR=/data \
     MENDELEA_PANEL_DIR=/app/panels \
     MENDELEA_RATE_PER_MINUTE=120 \
     MENDELEA_RATE_BURST=40 \
     PYTHONUNBUFFERED=1 \
     PORT=8000 \
-    # Set here because the image ships a specific panel, and the threshold is
-    # a share of that panel's corpus. The 2023 re-aggregation sweeps 6,083
-    # variants of the 31-gene timeline baked in below, which is 4.05% of it --
-    # so the 5% default finds nothing and the
-    # demo silently loses the relabelling story. Overridden per platform where
-    # the panel differs.
     MENDELEA_POLICY_THRESHOLD=0.03
 
 USER mendelea

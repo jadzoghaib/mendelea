@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import re
 import threading
@@ -84,6 +85,19 @@ SOCKET_TIMEOUT = float(os.environ.get("MENDELEA_SOCKET_TIMEOUT", "30"))
 POLICY_THRESHOLD = float(
     os.environ.get("MENDELEA_POLICY_THRESHOLD", str(policy.DEFAULT_THRESHOLD))
 )
+# A share has to be between 0 and 1, and neither end is harmless: at or below
+# zero every ordinary transition is reported as a database relabelling and the
+# adjusted rate collapses; at or above one nothing is ever flagged and the
+# demo quietly loses the distinction it exists to draw. Both are a plausible
+# typo -- "3" for three percent is the obvious one -- and both would be
+# believed. Same reasoning as the rate limiter's guard, including nan, which
+# is what float() returns for a fat-fingered value and which fails every
+# comparison in DETECT_SQL silently.
+if not math.isfinite(POLICY_THRESHOLD) or not 0 < POLICY_THRESHOLD < 1:
+    raise ValueError(
+        "MENDELEA_POLICY_THRESHOLD is a share of the corpus and must be "
+        f"between 0 and 1, exclusive; got {POLICY_THRESHOLD!r}"
+    )
 
 # Gene symbols reach SQL as a bound parameter, but bound or not we only ever
 # want to see something that looks like a gene symbol.
