@@ -709,6 +709,27 @@ def test_the_image_sets_a_threshold_that_matches_the_panel_it_ships():
     """
     from pathlib import Path as _P
 
+    import re as _re
+    from mendelea.reports import policy as _policy
+
     dockerfile = _P("Dockerfile").read_text(encoding="utf-8")
-    assert "MENDELEA_POLICY_THRESHOLD" in dockerfile, \
-        "the image ships a panel the default threshold cannot see an event in"
+    match = _re.search(r"MENDELEA_POLICY_THRESHOLD=([0-9.]+)", dockerfile)
+    assert match, "the image ships a panel the default threshold cannot see an event in"
+
+    # Checking the name appears would pass with the default written out in
+    # full -- the exact regression this guards. The value has to be lower than
+    # the default, because the panel baked into the image sweeps 4.05% where
+    # the default asks for 5%.
+    shipped = float(match.group(1))
+    assert 0 < shipped < _policy.DEFAULT_THRESHOLD, (
+        f"image ships {shipped}, which is not below the {_policy.DEFAULT_THRESHOLD} "
+        "default; the 31-gene panel's event is 4.05% and would go unreported"
+    )
+    # And above the largest ordinary step, or real movement starts being
+    # reported as relabelling. On this panel the biggest non-event step is
+    # LIKELY_BENIGN -> BENIGN at 2.91%, so the usable window is narrow:
+    # above 2.91% to exclude it, below 4.05% to catch the event.
+    assert shipped > 0.0291, (
+        f"image ships {shipped}, at or below the largest ordinary step on this "
+        "panel (2.91%); genuine movement would be flagged as relabelling"
+    )

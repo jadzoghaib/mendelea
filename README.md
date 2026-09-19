@@ -405,7 +405,7 @@ address for the whole world; trusted blindly, anyone could mint a fresh quota pe
 
 ### Backing it up, and rebuilding from nothing
 
-Nothing under `$MENDELEA_DATA_DIR` is in the repository, and that is correct: it is 369 MB of
+Nothing under `$MENDELEA_DATA_DIR` is in the repository, and that is correct: it is 651 MB of
 data, all of it derived from a public archive. **A bare clone plus a network connection gets
 back to a working install in about half an hour**, with no file restored from anywhere:
 
@@ -428,7 +428,7 @@ than regenerated:
 tar -czf evidence-snapshots.tar.gz -C $env:USERPROFILE\mendelea-data evidence
 gh release create data-2026-09-15 evidence-snapshots.tar.gz mendelea-public.duckdb `
   --title "Evidence snapshots and public demo warehouse" `
-  --notes "31-gene hereditary-cancer panel, 2018-12-25 to 2025-12-28, 8 releases"
+  --notes "31-gene hereditary-cancer panel, 2018-12-25 to 2025-12-28, 18 releases"
 ```
 
 Releases rather than the repository, because git keeps every version of a binary in full and
@@ -437,7 +437,7 @@ and the 69 MB demo warehouse, which saves a re-ingest before a meeting. The 556 
 warehouse is not — it rebuilds from the snapshots in about twenty seconds.
 
 (`export-public` reports binary units, as `du` does, while GitHub and your filesystem report
-decimal — the same file, about 56 MiB or 59 MB. The exact byte count shifts a little between
+decimal — the same file, about 66 MiB or 69 MB. The exact byte count shifts a little between
 exports because DuckDB allocates pages differently each time.)
 
 The genuinely irreplaceable asset is the one this repository has almost none of yet: the
