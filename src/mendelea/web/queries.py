@@ -87,9 +87,10 @@ def policy_events(connection,
     the whole point of this one is that it fails loudly enough to be noticed.
 
     The threshold is a parameter because it is a share of the corpus, and the
-    corpus depends on the panel. The 2023 re-aggregation is 6,083 variants
-    either way: 13.3% of the five-gene panel and 4.05% of the thirty-one gene
-    one, so a single default cannot catch both. `spike` has had this as a flag
+    corpus depends on the panel. The 2023 re-aggregation sweeps 5,843 variants
+    of the five-gene panel, which is 13.3% of it, and 6,083 of the thirty-one
+    gene panel, which is only 4.05% of that much larger corpus -- so a single
+    default cannot catch both. `spike` has had this as a flag
     from the start; without it here the demo silently stopped reporting an
     event it had found, which is the failure mode this detector exists to
     prevent, turned on itself.

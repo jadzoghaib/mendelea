@@ -51,7 +51,7 @@ research-use tool on the right side of the line while it is in front of a clinic
 ## The evidence that the business exists
 
 Measured on public ClinVar data, before any customer, on a 31-gene hereditary cancer panel across
-eight annual releases:
+eighteen releases, two-monthly through the 2023 event:
 
 ```
   MENDELEA PHASE 0  --  panel 'hereditary-cancer'   (18 releases)
@@ -118,6 +118,7 @@ python -m venv "$env:USERPROFILE\.venvs\mendelea"
 
 ```powershell
 mendelea ingest --panel hereditary-cancer --from 2018 --to 2026 --per-year 1
+mendelea ingest --panel hereditary-cancer --from 2022 --to 2023 --per-year 6   # the 2023 event
 mendelea spans  --panel hereditary-cancer     # build the bitemporal timeline
 mendelea spike  --panel hereditary-cancer     # the Phase 0 gate, above
 mendelea serve  --port 8000                   # the time machine
@@ -226,7 +227,7 @@ it. Pure-Python BGZF and tabix readers, because pysam does not build cleanly on 
 
 ```
 TP53, one release:  2.6 MB fetched from a 91 MB file  (97.1% saved, verified live)
-31 genes, 8 releases:  61 MB against 1.4 GB of whole-file downloads  (23x)
+31 genes, 18 releases: 154 MB against 4.4 GB of whole-file downloads  (29x)
 ```
 
 **Two runtime dependencies, `duckdb` and `requests`.** DuckDB already read every snapshot in place;
@@ -252,7 +253,7 @@ team can serve many laboratories:
 | **The private plane is tiny** | `cases/` is about 5 MB per laboratory; ten years of a mid-size lab's reporting is tens of thousands of rows |
 | **Marginal cost of a customer** | a few megabytes of storage and one SQL join against a warehouse that already exists |
 | **AI inference cost** | **$0.** Every number is a range predicate over a derived table, not a model call |
-| **Ingest cost** | 61 MB of network per panel refresh, against 1.4 GB the naive way |
+| **Ingest cost** | ~8 MB of network per release per panel, against ~250 MB the naive way |
 
 **Not yet modelled, and deliberately not invented here:** pricing, contract value, sales cycle, or
 break-even. A tool whose entire pitch is that it does not overstate a number has no business putting
@@ -328,7 +329,7 @@ service, no volume, no object storage — the web layer never reads a Parquet fi
 queries DuckDB tables, so the whole deployable artefact is the timeline itself.
 
 ```powershell
-mendelea export-public --out mendelea-public.duckdb   # ~60 MB, from a 308 MB warehouse
+mendelea export-public --out mendelea-public.duckdb   # 69 MB, from a 556 MB warehouse
 docker build -t mendelea .
 docker run --rm -p 8000:8000 mendelea
 ```
@@ -410,6 +411,7 @@ back to a working install in about half an hour**, with no file restored from an
 
 ```powershell
 mendelea ingest --panel hereditary-cancer --from 2018 --to 2026 --per-year 1
+mendelea ingest --panel hereditary-cancer --from 2022 --to 2023 --per-year 6
 mendelea spans  --panel hereditary-cancer
 mendelea case-demo --out demo-cases.csv --count 800 --seed 7   # the demo tenant, same seed
 mendelea case-load --tenant demo-lab --file demo-cases.csv
@@ -431,7 +433,7 @@ gh release create data-2026-09-15 evidence-snapshots.tar.gz mendelea-public.duck
 
 Releases rather than the repository, because git keeps every version of a binary in full and
 forever. Two files are worth the space: the 65 MB of snapshots, which are the system of record,
-and the ~60 MB demo warehouse, which saves a re-ingest before a meeting. The 308 MB working
+and the 69 MB demo warehouse, which saves a re-ingest before a meeting. The 556 MB working
 warehouse is not — it rebuilds from the snapshots in about twenty seconds.
 
 (`export-public` reports binary units, as `du` does, while GitHub and your filesystem report
@@ -481,8 +483,9 @@ Read these before quoting any number this produces.
   They are namespaced `mendelea:VA.` and must not be published as VRS IDs. What is claimed is
   stability, not federation.
 - **The detection threshold is panel-specific, and the default no longer fits this panel.** It is a
-  share of the corpus, so the corpus is the denominator: the same 6,083-variant re-aggregation is
-  13.3% of the five-gene panel and 4.05% of the thirty-one gene one. At the 5% default the denser
+  share of the corpus, so the corpus is the denominator: the same re-aggregation sweeps 5,843
+  variants of the five-gene panel, which is 13.3% of it, and 6,083 of the thirty-one gene panel,
+  which is only 4.05% of that far larger corpus. At the 5% default the denser
   timeline reports *no event at all* — a detector that exists to stop a silent misreading, failing
   silently. Pass `--policy-threshold 0.03` to `spike`, or set `MENDELEA_POLICY_THRESHOLD` for the
   server. A rule scaled to each timeline's own steps rather than to an absolute share would fix this

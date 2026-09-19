@@ -4,7 +4,7 @@
 # web layer never reads a Parquet file -- it only queries DuckDB tables. So
 # the whole deployable artefact is the warehouse that `mendelea export-public`
 # writes: the evidence timeline with the build intermediates and both private
-# planes removed. On the 31-gene panel that is 58 MB against 308 MB.
+# planes removed. On the 31-gene panel that is 69 MB against 556 MB.
 #
 # Build it first, then build this image:
 #
@@ -71,8 +71,9 @@ ENV MENDELEA_DATA_DIR=/data \
     PYTHONUNBUFFERED=1 \
     PORT=8000 \
     # Set here because the image ships a specific panel, and the threshold is
-    # a share of that panel's corpus. The 2023 re-aggregation is 4.05% of the
-    # 31-gene timeline baked in below, so the 5% default finds nothing and the
+    # a share of that panel's corpus. The 2023 re-aggregation sweeps 6,083
+    # variants of the 31-gene timeline baked in below, which is 4.05% of it --
+    # so the 5% default finds nothing and the
     # demo silently loses the relabelling story. Overridden per platform where
     # the panel differs.
     MENDELEA_POLICY_THRESHOLD=0.03

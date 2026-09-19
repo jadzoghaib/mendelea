@@ -5,7 +5,7 @@ takes a Dockerfile. What follows is ordered by what it costs, because the cheape
 that works is the right one for a demo that exists to book conversations.
 
 Build the artefact first. It is not in the repository and not in the image by accident —
-it is 61 MB of derived data, and git stores every version of a binary for ever:
+it is 69 MB of derived data, and git stores every version of a binary for ever:
 
 ```powershell
 mendelea export-public --out mendelea-public.duckdb
