@@ -721,15 +721,23 @@ def test_the_image_sets_a_threshold_that_matches_the_panel_it_ships():
     # the default, because the panel baked into the image sweeps 4.05% where
     # the default asks for 5%.
     shipped = float(match.group(1))
-    assert 0 < shipped < _policy.DEFAULT_THRESHOLD, (
-        f"image ships {shipped}, which is not below the {_policy.DEFAULT_THRESHOLD} "
-        "default; the 31-gene panel's event is 4.05% and would go unreported"
+
+    # The window is bounded by two *measurements* on the panel in the image,
+    # not by the default. Comparing against DEFAULT_THRESHOLD was the first
+    # attempt and it does not discriminate: 0.045 is below the 5% default and
+    # still above the event, so it passes while the detector reports nothing.
+    #
+    # Both numbers come from `policy.step_series` on the 18-release timeline:
+    EVENT_SHARE = 0.0405     # the 2023 re-aggregation, the thing to catch
+    LOUDEST_ORDINARY = 0.0291  # LIKELY_BENIGN -> BENIGN, the thing to exclude
+    assert LOUDEST_ORDINARY < EVENT_SHARE < _policy.DEFAULT_THRESHOLD, \
+        "the window these bounds describe has to exist"
+
+    assert shipped <= EVENT_SHARE, (
+        f"image ships {shipped}, above the 2023 event's {EVENT_SHARE} share; "
+        "the detector would report nothing and the demo loses the relabelling story"
     )
-    # And above the largest ordinary step, or real movement starts being
-    # reported as relabelling. On this panel the biggest non-event step is
-    # LIKELY_BENIGN -> BENIGN at 2.91%, so the usable window is narrow:
-    # above 2.91% to exclude it, below 4.05% to catch the event.
-    assert shipped > 0.0291, (
-        f"image ships {shipped}, at or below the largest ordinary step on this "
-        "panel (2.91%); genuine movement would be flagged as relabelling"
+    assert shipped > LOUDEST_ORDINARY, (
+        f"image ships {shipped}, at or below the loudest ordinary step on this "
+        f"panel ({LOUDEST_ORDINARY}); genuine movement would be called relabelling"
     )
