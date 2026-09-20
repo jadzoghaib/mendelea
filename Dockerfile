@@ -70,9 +70,10 @@ COPY --chown=mendelea:mendelea mendelea-public.duckdb /data/mendelea.duckdb
 # below, which is 4.05% of it, so the 5% default finds nothing and the demo
 # silently loses the relabelling story. Override it if the panel differs.
 #
-# Kept above the instruction rather than inside it: Docker strips whole-line
-# comments from a continued ENV and this built correctly either way, but a
-# reader should not have to know that to be sure.
+# Kept above the instruction rather than inside it. A comment between
+# continuation lines built correctly here, but it is the kind of thing that
+# differs between parsers and versions, and a Dockerfile is not the place to
+# rely on a detail you would have to test to be sure of.
 ENV MENDELEA_DATA_DIR=/data \
     MENDELEA_PANEL_DIR=/app/panels \
     MENDELEA_RATE_PER_MINUTE=120 \
