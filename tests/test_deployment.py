@@ -6,9 +6,12 @@ not contain any, that a caller cannot spend the container's CPU without limit,
 and that a platform probe is cheap enough to run every few seconds.
 """
 
+import base64
+import re
 import threading
 import time
 from http.server import ThreadingHTTPServer
+from xml.etree import ElementTree
 
 import duckdb
 import pytest
@@ -213,6 +216,191 @@ def test_responses_carry_the_security_headers(public_server):
 
 
 # --------------------------------------------------------------------------
+# The tab icon
+# --------------------------------------------------------------------------
+
+
+def _commands(d):
+    """Every command letter in a path, whether or not _visits handles it."""
+    return re.findall(r"[A-Za-z]", d)
+
+
+def _icon_paths(page):
+    """The `d` attribute of every path in the page's inline icon.
+
+    Decoding proves the base64 survived editing, and parsing proves the
+    result is still XML: a truncated payload gives a browser a broken icon
+    and gives a reader of the HTML no clue at all.
+    """
+    # Matched on the data URI alone, not the surrounding tag: keying on
+    # `rel="icon" href="` made every icon test fail with "no inline icon" if
+    # someone added a `type` attribute or reordered them, which says nothing
+    # about the icon. Exactly one is expected, so an ambiguous page still
+    # fails loudly.
+    found = re.findall(r"data:image/svg\+xml;base64,([A-Za-z0-9+/=]+)", page)
+    assert len(found) == 1, f"expected one inline SVG data URI, found {len(found)}"
+    root = ElementTree.fromstring(base64.b64decode(found[0]))
+    assert root.tag.endswith("svg")
+    assert root.get("viewBox") == "0 0 32 32"
+    paths = [node.get("d") for node in root.iter() if node.tag.endswith("path")]
+    # Every test below indexes this list by position: [0] and [1] are the two
+    # strands, [2] the rungs. Without this, inserting a path ahead of the
+    # rungs makes the rung test measure the new path instead -- passing if
+    # that path happens to sit inside the strand bounds, which is the same
+    # silent false confidence the width test exists to prevent.
+    assert len(paths) == 3, f"expected two strands and one rung path, got {len(paths)}"
+    for d in paths:
+        unhandled = sorted(set(_commands(d)) - set("MQh"))
+        # Without this, an unhandled letter falls through the tokenizer and its
+        # digits land in the command position, so swapping `h18` for `v18`
+        # fails with "unhandled path command '18'" -- naming the number rather
+        # than the command. An icon edit doing exactly that is what these
+        # tests are for, so the failure has to say so.
+        assert not unhandled, (
+            f"icon path uses {unhandled}, which _visits cannot measure;"
+            f" extend it or keep the icon to M, Q and h: {d}"
+        )
+    return paths
+
+
+def _visits(d, steps=20):
+    """Every point a path visits, sampling quadratics rather than solving them.
+
+    A control point outside the viewBox pulls the curve far past its own
+    endpoints, which is how this icon gets its width at all -- so endpoints
+    alone would measure the wrong thing.
+    """
+    arity = {"M": 2, "h": 1, "Q": 4}
+    tokens = re.findall(r"[MQh]|-?\d+(?:\.\d+)?", d)
+    x = y = 0.0
+    index = 0
+    while index < len(tokens):
+        command = tokens[index]
+        if command not in arity:
+            raise AssertionError(f"unhandled path command {command!r} in {d!r}")
+        # Argument counts are checked rather than sliced blind: a truncated
+        # path otherwise dies on "not enough values to unpack" or a bare
+        # IndexError, neither of which says which command was short. This
+        # file asserts elsewhere that a failure has to name the offender.
+        args = tokens[index + 1:index + 1 + arity[command]]
+        if len(args) != arity[command] or any(a in arity for a in args):
+            raise AssertionError(
+                f"path command {command!r} wants {arity[command]}"
+                f" number{'s' if arity[command] > 1 else ''}, got {args} in {d!r}"
+            )
+        args = [float(a) for a in args]
+        index += 1 + arity[command]
+
+        if command == "M":
+            x, y = args
+            yield x, y
+        elif command == "h":
+            x += args[0]
+            yield x, y
+        else:
+            cx, cy, x1, y1 = args
+            for step in range(steps + 1):
+                t = step / steps
+                u = 1 - t
+                yield (u * u * x + 2 * u * t * cx + t * t * x1,
+                       u * u * y + 2 * u * t * cy + t * t * y1)
+            x, y = x1, y1
+
+
+def _extent(points):
+    """(left, right, top, bottom) of a path. Materialised first: _visits is a
+    generator, and reading it twice leaves the second axis empty."""
+    points = list(points)
+    xs = [x for x, _ in points]
+    ys = [y for _, y in points]
+    return min(xs), max(xs), min(ys), max(ys)
+
+
+def _strand_x_at(d, y):
+    """Where a strand sits horizontally at a given height.
+
+    Sampled on a fine grid rather than solved: the curve is monotonic in y
+    over each segment, so the nearest sample is within a fraction of a unit,
+    and a solver here would be more machinery than the question needs."""
+    return min(_visits(d, steps=400), key=lambda point: abs(point[1] - y))[0]
+
+
+def test_each_strand_fills_its_box(public_server):
+    """A helix drawn between its own endpoints is 7 units wide in a 32-unit
+    box, which at 16px is a vertical smudge; the width comes from control
+    points placed outside the box. The first attempt shipped the smudge.
+
+    Measured per strand, not over the whole icon: the rungs are a fixed
+    18-unit horizontal line, so a bound on the union of all three paths is
+    satisfied by the rungs alone and says nothing about the strands. That
+    version of this test passed on the broken icon."""
+    url, _ = public_server
+    page = requests.get(f"{url}/", timeout=10).text
+    for index, d in enumerate(_icon_paths(page)[:2]):
+        left, right, top, bottom = _extent(_visits(d))
+        assert right - left >= 0.4 * 32, (
+            f"strand {index} is {right - left:.1f} units wide in a 32-unit box"
+        )
+        assert bottom - top >= 0.7 * 32, (
+            f"strand {index} is {bottom - top:.1f} units tall in a 32-unit box"
+        )
+
+
+def test_the_rungs_land_on_the_strands(public_server):
+    """A rung reads as connecting the strands only if it ends *on* them, at
+    its own height.
+
+    Bounding the rung against the strands' overall left and right instead
+    passes on a rung floating in clear space: move these two to y=5 and y=19,
+    where the strands sit at x 9.9 and 22.1, and a 7-to-25 bar overhangs both
+    by three units while every such assertion still holds. Review caught that;
+    this samples each strand at the rung's own y instead."""
+    url, _ = public_server
+    page = requests.get(f"{url}/", timeout=10).text
+    paths = _icon_paths(page)
+    rungs = list(_visits(paths[2]))
+    assert len(rungs) == 4, f"expected two rungs, two ends each; got {rungs}"
+    # The pairing below takes points two at a time, which is only one rung
+    # each if the path is a move and a line, twice. And the ends are sorted
+    # rather than taken in order, because `M25 23h-18` draws the same rung
+    # right to left and would otherwise be checked against the wrong strand.
+    assert _commands(paths[2]) == ["M", "h", "M", "h"], (
+        f"rungs are drawn as {_commands(paths[2])}, not two move-and-line"
+        f" pairs: {paths[2]}"
+    )
+
+    for ends in (rungs[:2], rungs[2:]):
+        (left, y), (right, _) = sorted(ends)
+        at_height = sorted(_strand_x_at(d, y) for d in paths[:2])
+        assert left == pytest.approx(at_height[0], abs=0.3), (
+            f"rung at y={y} starts at x={left}, but the left strand is at"
+            f" x={at_height[0]:.2f} there"
+        )
+        assert right == pytest.approx(at_height[1], abs=0.3), (
+            f"rung at y={y} ends at x={right}, but the right strand is at"
+            f" x={at_height[1]:.2f} there"
+        )
+
+
+def test_the_two_strands_are_mirrored(public_server):
+    """The pair reads as a helix only if one strand is the other reflected in
+    the centre line. Drifting control points give two unrelated squiggles."""
+    url, _ = public_server
+    page = requests.get(f"{url}/", timeout=10).text
+    drawn = _icon_paths(page)[:2]
+    # Equal point counts are not enough to make position i comparable: two
+    # different command layouts can sample to the same total and shift the
+    # grid, so the zip below would compare unrelated points on the curves.
+    layouts = [_commands(d) for d in drawn]
+    assert layouts[0] == layouts[1], f"strands are drawn differently: {layouts}"
+    strand_a, strand_b = (list(_visits(d)) for d in drawn)
+    assert len(strand_a) == len(strand_b)
+    for (ax, ay), (bx, by) in zip(strand_a, strand_b):
+        assert ay == pytest.approx(by)
+        assert ax - 16 == pytest.approx(16 - bx)
+
+
+# --------------------------------------------------------------------------
 # The limiter
 # --------------------------------------------------------------------------
 
@@ -291,23 +479,81 @@ def test_waiting_does_not_bank_a_bigger_burst():
 
 
 @pytest.fixture
-def throttled(full_warehouse, tmp_path, monkeypatch):
-    source, _ = full_warehouse
-    target = tmp_path / "public.duckdb"
-    spans.export_public(source, target)
-    # A tenth of a token per second, not one. At one per second the test only
-    # produced a 429 if eight sequential HTTP round trips finished inside a
-    # second, which is true on this laptop and not on a loaded CI box.
-    monkeypatch.setattr(server_module, "RATE_PER_MINUTE", 6.0)
-    monkeypatch.setattr(server_module, "RATE_BURST", 3)
+def limited_server(full_warehouse, tmp_path, monkeypatch):
+    """Builds a throttled public server; the caller says what proxy to expect.
 
-    server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(target))
-    threading.Thread(target=server.serve_forever, daemon=True).start()
+    One factory rather than three near-identical fixtures, so a change to how
+    the server starts or stops is made once. The only thing the callers below
+    differ by is the proxy configuration under test.
+    """
+    servers = []
+
+    def build(header="", hops=1):
+        if servers:
+            raise AssertionError(
+                "limited_server builds one server per test. A second call would"
+                " re-point the module-level proxy settings that the first server"
+                " reads on every request, and re-export over the file it holds"
+                " open -- so the first server would silently change behaviour"
+                " with nothing failing to say so."
+            )
+        source, _ = full_warehouse
+        target = tmp_path / "public.duckdb"
+        spans.export_public(source, target)
+        # A tenth of a token per second, not one. At one per second the test
+        # only produced a 429 if eight sequential HTTP round trips finished
+        # inside a second, which is true on this laptop and not on a loaded
+        # CI box.
+        monkeypatch.setattr(server_module, "RATE_PER_MINUTE", 6.0)
+        monkeypatch.setattr(server_module, "RATE_BURST", 3)
+        monkeypatch.setattr(server_module, "TRUSTED_IP_HEADER", header)
+        monkeypatch.setattr(server_module, "TRUSTED_PROXY_HOPS", hops)
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(target))
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        servers.append(server)
+        return f"http://127.0.0.1:{server.server_address[1]}"
+
     try:
-        yield f"http://127.0.0.1:{server.server_address[1]}"
+        yield build
     finally:
-        server.shutdown()
-        server.server_close()
+        for server in servers:
+            server.shutdown()
+            server.server_close()
+
+
+@pytest.fixture
+def throttled(limited_server):
+    """Directly exposed: the limiter reads the socket, which is the client."""
+    return limited_server()
+
+
+@pytest.fixture
+def proxied(limited_server):
+    """Behind a proxy that appends one entry, as Cloud Run does.
+
+    One, not two: measured against the live service rather than taken from
+    Google's load-balancer documentation, which describes a different ingress
+    and would put the hop count one too high -- which is precisely where a
+    forged prefix lands.
+    """
+    return limited_server("X-Forwarded-For", 1)
+
+
+@pytest.fixture
+def short_chain(limited_server):
+    """Configured for two appended entries against a proxy that appends one.
+
+    Only to prove the fallback: a chain shorter than the hop count is not the
+    chain this deployment was configured for, so no entry in it is trusted.
+    There is deliberately no test asserting what a too-high hop count *does*
+    read. Review pointed out that such a test passes exactly when the
+    deployment is exploitable, and would fail on a future change that made an
+    over-long chain fall back instead -- cementing the vulnerable behaviour
+    rather than guarding against it. What the wrong number costs is recorded
+    in `server.py` and `deploy/README.md`, measured.
+    """
+    return limited_server("X-Forwarded-For", 2)
 
 
 def test_a_flood_is_refused_with_429_and_retry_after(throttled):
@@ -566,6 +812,76 @@ def test_the_context_is_warmed_before_the_port_opens(tmp_path, full_warehouse):
     finally:
         server.shutdown()
         server.server_close()
+
+
+def test_a_spoofed_forwarded_prefix_does_not_mint_a_fresh_bucket(proxied):
+    """The defect this guards is a limiter that looks like one and is not.
+
+    Google's load balancer appends `<client-ip>,<load-balancer-ip>` to
+    whatever the caller sent and does not verify anything before it. Reading
+    the leftmost entry therefore reads the caller's own text, so rotating it
+    gives an unlimited supply of buckets. Every request below carries a
+    different forged prefix and they must still share one bucket."""
+    codes = [
+        requests.get(
+            f"{proxied}/api/context",
+            headers={"X-Forwarded-For": f"203.0.113.{n}, 198.51.100.7"},
+            timeout=10,
+        ).status_code
+        for n in range(8)
+    ]
+    assert codes[0] == 200
+    assert 429 in codes, f"forged prefixes were handed their own buckets: {codes}"
+
+
+def test_two_real_clients_do_not_share_a_bucket(proxied):
+    """The other half: the entry the proxy itself wrote does separate
+    visitors, which is the whole reason for reading the header at all."""
+    spent = [
+        requests.get(
+            f"{proxied}/api/context",
+            headers={"X-Forwarded-For": "198.51.100.7"},
+            timeout=10,
+        ).status_code
+        for _ in range(8)
+    ]
+    assert 429 in spent, f"the first client was never throttled: {spent}"
+
+    # Pinned immediately before the comparison. At 0.1 tokens a second the
+    # first bucket refills to its burst in 30 s, so a stalled run would find
+    # it full again and read the second visitor's 200 as separation when a
+    # socket-keyed implementation would have given the same answer. That is
+    # the silent false confidence these tests exist to remove.
+    still_dry = requests.get(
+        f"{proxied}/api/context",
+        headers={"X-Forwarded-For": "198.51.100.7"},
+        timeout=10,
+    )
+    assert still_dry.status_code == 429, (
+        "the first client's bucket refilled before the comparison, so this"
+        " test could not have told separation from a shared bucket"
+    )
+
+    fresh = requests.get(
+        f"{proxied}/api/context",
+        headers={"X-Forwarded-For": "198.51.100.99"},
+        timeout=10,
+    )
+    assert fresh.status_code == 200, "a second visitor inherited the first one's bucket"
+
+
+def test_a_chain_shorter_than_the_hop_count_falls_back_to_the_socket(short_chain):
+    """A request that did not come through the configured proxy has no
+    trustworthy entry to read, so it must not be believed."""
+    codes = [
+        requests.get(
+            f"{short_chain}/api/context",
+            headers={"X-Forwarded-For": f"203.0.113.{n}"},
+            timeout=10,
+        ).status_code
+        for n in range(8)
+    ]
+    assert 429 in codes, f"a one-hop chain was read as a client address: {codes}"
 
 
 def test_the_health_probe_is_never_throttled(throttled):

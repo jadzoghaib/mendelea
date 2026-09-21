@@ -58,7 +58,64 @@ CSP = (
 # header when there is no proxy is worse: anyone can set it and get their own
 # fresh bucket per request. So it is opt-in, and names the header the
 # deployment actually trusts (Fly-Client-IP on Fly, X-Forwarded-For elsewhere).
+#
+# And it is read from the RIGHT. A proxy appends; it does not replace. So
+# whatever the caller sent survives as a prefix, and the leftmost entry is
+# caller-written text. Reading it lets anyone mint a fresh bucket per request
+# and walk past the limiter -- worse than having no limiter, because it looks
+# like one. The rightmost entries are the ones a proxy actually wrote.
+#
+# HOPS is how far from the right the nearest trusted proxy's entry sits:
+#
+#   Cloud Run (*.run.app)   X-Forwarded-For   1   one entry, measured
+#   Fly.io                  Fly-Client-IP     1   one value, no chain
+#
+# **Measure this, never infer it.** Google documents its *external HTTP(S)
+# load balancer* as appending `<client-ip>,<load-balancer-ip>` -- two entries.
+# Cloud Run's own run.app ingress is a different path and appends one. Taking
+# the documented two made the live service bypassable: with HOPS=2 the forged
+# prefix lands exactly on the trusted position. Sixty requests carrying sixty
+# different forged values were all served while the real bucket was empty.
+#
+# Two reviewers argued for 3, on the grounds that run.app presents
+# `client, GFE, 169.254.1.1`. Measured against the live service, it does not:
+#
+#              forged prefixes, drained   a second network, drained
+#   HOPS=2     60 of 60 served            refused
+#   HOPS=1     6 of 40 served             served
+#
+# Under a three-entry chain, HOPS=1 would read a constant and that second
+# network would have been refused too. It was served, so the last entry
+# varies by caller and there is exactly one appended hop. Both halves matter:
+# the left column is forgery, the right is whether real visitors separate at
+# all, and a wrong hop count fails one or the other silently.
+#
+# To measure it on a new platform, run both. Send unique forged values while
+# the real bucket is drained -- all served means the forged value is reaching
+# the trusted position and HOPS is too high. Then fetch from a different
+# network while still draining -- refused means HOPS is too low and everyone
+# is sharing one bucket.
+#
+# A chain shorter than HOPS means the request did not arrive through the
+# proxy this deployment was configured for, so the socket is used instead.
+# One is the safe value: the last entry is always the nearest proxy's own.
 TRUSTED_IP_HEADER = os.environ.get("MENDELEA_TRUSTED_IP_HEADER", "")
+_hops = os.environ.get("MENDELEA_TRUSTED_PROXY_HOPS", "1")
+try:
+    TRUSTED_PROXY_HOPS = int(_hops)
+except ValueError as exc:
+    # int() alone raises "invalid literal for int() with base 10: 'one'",
+    # which does not say which setting is wrong. For the one value in this
+    # file whose miscounting is a security defect, the boot error names it.
+    raise ValueError(
+        "MENDELEA_TRUSTED_PROXY_HOPS must be a whole number of chain entries"
+        f" counted from the right; got {_hops!r}"
+    ) from exc
+if TRUSTED_PROXY_HOPS < 1:
+    raise ValueError(
+        "MENDELEA_TRUSTED_PROXY_HOPS counts entries from the right and must be"
+        f" at least 1; got {TRUSTED_PROXY_HOPS}"
+    )
 RATE_PER_MINUTE = float(os.environ.get("MENDELEA_RATE_PER_MINUTE", "120"))
 RATE_BURST = int(os.environ.get("MENDELEA_RATE_BURST", "40"))
 
@@ -301,10 +358,12 @@ def make_handler(warehouse: Path):
 
         def _client(self) -> str:
             if TRUSTED_IP_HEADER:
-                forwarded = self.headers.get(TRUSTED_IP_HEADER, "")
-                if forwarded:
-                    # X-Forwarded-For is a chain; the client is the first hop.
-                    return forwarded.split(",")[0].strip()
+                raw = self.headers.get(TRUSTED_IP_HEADER, "")
+                chain = [hop.strip() for hop in raw.split(",") if hop.strip()]
+                # Counted from the right: everything to the left of the
+                # proxy's own entry was supplied by the caller.
+                if len(chain) >= TRUSTED_PROXY_HOPS:
+                    return chain[-TRUSTED_PROXY_HOPS]
             return self.client_address[0]
 
         def _send(self, status: int, body: bytes, content_type: str,
