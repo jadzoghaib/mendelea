@@ -11,6 +11,31 @@ it is 69 MB of derived data, and git stores every version of a binary for ever:
 mendelea export-public --out mendelea-public.duckdb
 ```
 
+**That command reads a warehouse which is also not in this repository.** It lives under
+`~/mendelea-data` (or `MENDELEA_DATA_DIR`) and is about 530 MB — the ingested snapshots,
+their build intermediates, and the timeline derived from them. On a machine that has
+never run the pipeline, or after the working copy is deleted, rebuild it before
+exporting:
+
+```powershell
+mendelea ingest --panel hereditary-cancer --from 2018 --to 2025 --per-year 1
+mendelea ingest --panel hereditary-cancer --from 2022 --to 2023 --per-year 6
+mendelea spans
+mendelea export-public --out mendelea-public.duckdb
+```
+
+Two passes, because the shipped timeline is not evenly spaced: one release a year from
+2018 to 2025, and six each across 2022 and 2023, which is what resolves the
+re-aggregation to a nine-week window instead of a year-wide smear. That is 18 releases,
+`2018-12-25` through `2025-12-28`. `mendelea provenance` lists what a warehouse actually
+holds, so compare rather than assume the selection matched.
+
+The ingest is range-queried, so it pulls 146 MB over the wire rather than the 1.25 GB
+those 18 releases weigh, but it is not instant. Nothing is lost by deleting the working
+copy — every input is a public ClinVar archive and the pipeline is deterministic — but a
+redeploy is an ingest away, not a clone away. The already-built image in Artifact
+Registry keeps serving either way.
+
 ---
 
 ## What is running now
