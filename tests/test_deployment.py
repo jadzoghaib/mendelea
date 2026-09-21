@@ -232,11 +232,14 @@ def _icon_paths(page):
     result is still XML: a truncated payload gives a browser a broken icon
     and gives a reader of the HTML no clue at all.
     """
-    match = re.search(
-        r'<link rel="icon" href="data:image/svg\+xml;base64,([A-Za-z0-9+/=]+)"', page
-    )
-    assert match, "the served page carries no inline icon"
-    root = ElementTree.fromstring(base64.b64decode(match.group(1)))
+    # Matched on the data URI alone, not the surrounding tag: keying on
+    # `rel="icon" href="` made every icon test fail with "no inline icon" if
+    # someone added a `type` attribute or reordered them, which says nothing
+    # about the icon. Exactly one is expected, so an ambiguous page still
+    # fails loudly.
+    found = re.findall(r"data:image/svg\+xml;base64,([A-Za-z0-9+/=]+)", page)
+    assert len(found) == 1, f"expected one inline SVG data URI, found {len(found)}"
+    root = ElementTree.fromstring(base64.b64decode(found[0]))
     assert root.tag.endswith("svg")
     assert root.get("viewBox") == "0 0 32 32"
     paths = [node.get("d") for node in root.iter() if node.tag.endswith("path")]
@@ -357,8 +360,17 @@ def test_the_rungs_land_on_the_strands(public_server):
     paths = _icon_paths(page)
     rungs = list(_visits(paths[2]))
     assert len(rungs) == 4, f"expected two rungs, two ends each; got {rungs}"
+    # The pairing below takes points two at a time, which is only one rung
+    # each if the path is a move and a line, twice. And the ends are sorted
+    # rather than taken in order, because `M25 23h-18` draws the same rung
+    # right to left and would otherwise be checked against the wrong strand.
+    assert _commands(paths[2]) == ["M", "h", "M", "h"], (
+        f"rungs are drawn as {_commands(paths[2])}, not two move-and-line"
+        f" pairs: {paths[2]}"
+    )
 
-    for (left, y), (right, _) in zip(rungs[::2], rungs[1::2]):
+    for ends in (rungs[:2], rungs[2:]):
+        (left, y), (right, _) = sorted(ends)
         at_height = sorted(_strand_x_at(d, y) for d in paths[:2])
         assert left == pytest.approx(at_height[0], abs=0.3), (
             f"rung at y={y} starts at x={left}, but the left strand is at"
@@ -834,6 +846,22 @@ def test_two_real_clients_do_not_share_a_bucket(proxied):
         for _ in range(8)
     ]
     assert 429 in spent, f"the first client was never throttled: {spent}"
+
+    # Pinned immediately before the comparison. At 0.1 tokens a second the
+    # first bucket refills to its burst in 30 s, so a stalled run would find
+    # it full again and read the second visitor's 200 as separation when a
+    # socket-keyed implementation would have given the same answer. That is
+    # the silent false confidence these tests exist to remove.
+    still_dry = requests.get(
+        f"{proxied}/api/context",
+        headers={"X-Forwarded-For": "198.51.100.7"},
+        timeout=10,
+    )
+    assert still_dry.status_code == 429, (
+        "the first client's bucket refilled before the comparison, so this"
+        " test could not have told separation from a shared bucket"
+    )
+
     fresh = requests.get(
         f"{proxied}/api/context",
         headers={"X-Forwarded-For": "198.51.100.99"},
