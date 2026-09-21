@@ -77,9 +77,24 @@ CSP = (
 # prefix lands exactly on the trusted position. Sixty requests carrying sixty
 # different forged values were all served while the real bucket was empty.
 #
-# To measure it on a new platform, send unique forged values while the real
-# bucket is drained. All served means the forged value is reaching the
-# trusted position and HOPS is too high.
+# Two reviewers argued for 3, on the grounds that run.app presents
+# `client, GFE, 169.254.1.1`. Measured against the live service, it does not:
+#
+#              forged prefixes, drained   a second network, drained
+#   HOPS=2     60 of 60 served            refused
+#   HOPS=1     6 of 40 served             served
+#
+# Under a three-entry chain, HOPS=1 would read a constant and that second
+# network would have been refused too. It was served, so the last entry
+# varies by caller and there is exactly one appended hop. Both halves matter:
+# the left column is forgery, the right is whether real visitors separate at
+# all, and a wrong hop count fails one or the other silently.
+#
+# To measure it on a new platform, run both. Send unique forged values while
+# the real bucket is drained -- all served means the forged value is reaching
+# the trusted position and HOPS is too high. Then fetch from a different
+# network while still draining -- refused means HOPS is too low and everyone
+# is sharing one bucket.
 #
 # A chain shorter than HOPS means the request did not arrive through the
 # proxy this deployment was configured for, so the socket is used instead.

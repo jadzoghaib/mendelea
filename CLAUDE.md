@@ -68,7 +68,7 @@ to JSON lines and loads them with `read_json`; binding them one by one costs
 
 ## Honest state
 
-242 tests pass. Every substantive bug this project has had was found by reading
+289 tests pass. Every substantive bug this project has had was found by reading
 code or running it on real data — never by the test suite, which was green
 throughout. Budget for reading, not just testing.
 
@@ -85,5 +85,27 @@ test of mine that passed on a filter which never ran. Worth reading their
 output properly rather than merging past it — but check each claim against the
 data before acting, since the one they pushed hardest (a star-only span break
 defeating the policy key) measures to exactly zero on both panels.
+
+The deployed service added a fourth class: defects that only exist in the
+deployment. The live revision carried no environment at all, so the rate
+limiter read the socket -- which behind Cloud Run is the Google frontend --
+and throttled every visitor on the internet as one client. Nothing in the
+repository was wrong. Reading the code could not have found it.
+
+**The proxy hop count must be measured, never read off a docs page.** Google
+documents its external HTTP(S) load balancer as appending
+`<client-ip>,<load-balancer-ip>`; Cloud Run's own run.app ingress appends
+one entry. Taking the documented two put the caller's forged prefix exactly
+on the trusted position, and both PR reviewers then pushed for three. The
+measurement that settles it needs both halves, because each catches the
+opposite error:
+
+|  | forged prefixes, bucket drained | a second network, bucket drained |
+|---|---|---|
+| hop count too high | all served -- forgeable | — |
+| hop count too low | — | refused -- everyone shares one bucket |
+
+Measured on this service: `HOPS=2` gave 60 of 60 forged served and refused
+the second network; `HOPS=1` gave 6 of 40 and served it. One appended hop.
 
 No TLS, no rate limiting: bind to 127.0.0.1 only.

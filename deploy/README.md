@@ -102,7 +102,20 @@ Why those flags, given what was measured on this container:
 
   All `200` while the real bucket is empty means the forged value is reaching the
   trusted position and the hop count is too high. Mixed `429` means it is not.
-  On `HOPS=2` this returned 60 × `200`; on `HOPS=1` it returns 429s.
+
+  That is only half the check. A hop count too *low* is also wrong — it reads an
+  address every visitor shares, and the symptom is the original bug rather than a
+  forgeable one. So also fetch from a different network while still draining this one.
+  Both were measured here:
+
+  | | forged prefixes, drained | a second network, drained |
+  |---|---|---|
+  | `HOPS=2` | 60 of 60 served — forgeable | refused — shared bucket |
+  | `HOPS=1` | 6 of 40 served — forgery ignored | served — visitors separate |
+
+  Review pushed for `3`, on the grounds that `run.app` presents
+  `client, GFE, 169.254.1.1`. It does not here: under a three-entry chain `HOPS=1`
+  would read a constant, and the second network would have been refused. It was served.
 
 Cloud Run listens on `$PORT`, which it sets to 8080. The Dockerfile honours it.
 
@@ -168,7 +181,7 @@ Space's `README.md` front matter, because Spaces expect 7860.
 The container is stateless and holds only public ClinVar data, so there is no volume, no
 database service, no secret and no backup. Losing the machine loses nothing but uptime.
 
-Two things to set wherever you land:
+What to set wherever you land:
 
 | | |
 |---|---|

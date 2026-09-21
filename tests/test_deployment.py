@@ -244,7 +244,7 @@ def _icon_paths(page):
     return paths
 
 
-def _visits(d):
+def _visits(d, steps=20):
     """Every point a path visits, sampling quadratics rather than solving them.
 
     A control point outside the viewBox pulls the curve far past its own
@@ -266,8 +266,8 @@ def _visits(d):
             index += 2
         elif command == "Q":
             cx, cy, x1, y1 = (float(t) for t in tokens[index + 1:index + 5])
-            for step in range(21):
-                t = step / 20
+            for step in range(steps + 1):
+                t = step / steps
                 u = 1 - t
                 yield (u * u * x + 2 * u * t * cx + t * t * x1,
                        u * u * y + 2 * u * t * cy + t * t * y1)
@@ -284,6 +284,15 @@ def _extent(points):
     xs = [x for x, _ in points]
     ys = [y for _, y in points]
     return min(xs), max(xs), min(ys), max(ys)
+
+
+def _strand_x_at(d, y):
+    """Where a strand sits horizontally at a given height.
+
+    Sampled on a fine grid rather than solved: the curve is monotonic in y
+    over each segment, so the nearest sample is within a fraction of a unit,
+    and a solver here would be more machinery than the question needs."""
+    return min(_visits(d, steps=400), key=lambda point: abs(point[1] - y))[0]
 
 
 def test_each_strand_fills_its_box(public_server):
@@ -308,15 +317,30 @@ def test_each_strand_fills_its_box(public_server):
 
 
 def test_the_rungs_land_on_the_strands(public_server):
-    """The rungs read as connecting the two strands only if they end where the
-    strands are. A rung wider than the helix it crosses is a loose bar."""
+    """A rung reads as connecting the strands only if it ends *on* them, at
+    its own height.
+
+    Bounding the rung against the strands' overall left and right instead
+    passes on a rung floating in clear space: move these two to y=5 and y=19,
+    where the strands sit at x 9.9 and 22.1, and a 7-to-25 bar overhangs both
+    by three units while every such assertion still holds. Review caught that;
+    this samples each strand at the rung's own y instead."""
     url, _ = public_server
     page = requests.get(f"{url}/", timeout=10).text
     paths = _icon_paths(page)
-    strands = [_extent(_visits(d)) for d in paths[:2]]
-    rung_left, rung_right = _extent(_visits(paths[2]))[:2]
-    assert rung_left >= min(left for left, _, _, _ in strands) - 0.5
-    assert rung_right <= max(right for _, right, _, _ in strands) + 0.5
+    rungs = list(_visits(paths[2]))
+    assert len(rungs) == 4, f"expected two rungs, two ends each; got {rungs}"
+
+    for (left, y), (right, _) in zip(rungs[::2], rungs[1::2]):
+        at_height = sorted(_strand_x_at(d, y) for d in paths[:2])
+        assert left == pytest.approx(at_height[0], abs=0.3), (
+            f"rung at y={y} starts at x={left}, but the left strand is at"
+            f" x={at_height[0]:.2f} there"
+        )
+        assert right == pytest.approx(at_height[1], abs=0.3), (
+            f"rung at y={y} ends at x={right}, but the right strand is at"
+            f" x={at_height[1]:.2f} there"
+        )
 
 
 def test_the_two_strands_are_mirrored(public_server):
@@ -324,7 +348,13 @@ def test_the_two_strands_are_mirrored(public_server):
     the centre line. Drifting control points give two unrelated squiggles."""
     url, _ = public_server
     page = requests.get(f"{url}/", timeout=10).text
-    strand_a, strand_b = (list(_visits(d)) for d in _icon_paths(page)[:2])
+    drawn = _icon_paths(page)[:2]
+    # Equal point counts are not enough to make position i comparable: two
+    # different command layouts can sample to the same total and shift the
+    # grid, so the zip below would compare unrelated points on the curves.
+    layouts = [re.findall(r"[MQhv]", d) for d in drawn]
+    assert layouts[0] == layouts[1], f"strands are drawn differently: {layouts}"
+    strand_a, strand_b = (list(_visits(d)) for d in drawn)
     assert len(strand_a) == len(strand_b)
     for (ax, ay), (bx, by) in zip(strand_a, strand_b):
         assert ay == pytest.approx(by)
