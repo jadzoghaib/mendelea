@@ -100,7 +100,17 @@ CSP = (
 # proxy this deployment was configured for, so the socket is used instead.
 # One is the safe value: the last entry is always the nearest proxy's own.
 TRUSTED_IP_HEADER = os.environ.get("MENDELEA_TRUSTED_IP_HEADER", "")
-TRUSTED_PROXY_HOPS = int(os.environ.get("MENDELEA_TRUSTED_PROXY_HOPS", "1"))
+_hops = os.environ.get("MENDELEA_TRUSTED_PROXY_HOPS", "1")
+try:
+    TRUSTED_PROXY_HOPS = int(_hops)
+except ValueError as exc:
+    # int() alone raises "invalid literal for int() with base 10: 'one'",
+    # which does not say which setting is wrong. For the one value in this
+    # file whose miscounting is a security defect, the boot error names it.
+    raise ValueError(
+        "MENDELEA_TRUSTED_PROXY_HOPS must be a whole number of chain entries"
+        f" counted from the right; got {_hops!r}"
+    ) from exc
 if TRUSTED_PROXY_HOPS < 1:
     raise ValueError(
         "MENDELEA_TRUSTED_PROXY_HOPS counts entries from the right and must be"

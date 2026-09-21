@@ -68,7 +68,7 @@ to JSON lines and loads them with `read_json`; binding them one by one costs
 
 ## Honest state
 
-289 tests pass. Every substantive bug this project has had was found by reading
+288 tests pass. Every substantive bug this project has had was found by reading
 code or running it on real data — never by the test suite, which was green
 throughout. Budget for reading, not just testing.
 

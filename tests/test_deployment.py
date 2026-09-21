@@ -485,8 +485,17 @@ def proxied(full_warehouse, tmp_path, monkeypatch):
 
 
 @pytest.fixture
-def deep_proxied(full_warehouse, tmp_path, monkeypatch):
-    """Configured for two appended entries where the proxy appends one."""
+def short_chain(full_warehouse, tmp_path, monkeypatch):
+    """Configured for two appended entries against a proxy that appends one.
+
+    Only to prove the fallback: a chain shorter than the hop count is not the
+    chain this deployment was configured for, so no entry in it is trusted.
+    There is deliberately no test here asserting what a too-high hop count
+    *does* read. Review pointed out that such a test passes exactly when the
+    deployment is exploitable, and would fail on a future change that made
+    an over-long chain fall back instead -- cementing the vulnerable
+    behaviour rather than guarding against it. What the wrong number costs
+    is recorded in `server.py` and `deploy/README.md`, measured."""
     source, _ = full_warehouse
     target = tmp_path / "public.duckdb"
     spans.export_public(source, target)
@@ -802,40 +811,18 @@ def test_two_real_clients_do_not_share_a_bucket(proxied):
     assert fresh.status_code == 200, "a second visitor inherited the first one's bucket"
 
 
-def test_a_chain_shorter_than_the_hop_count_falls_back_to_the_socket(deep_proxied):
+def test_a_chain_shorter_than_the_hop_count_falls_back_to_the_socket(short_chain):
     """A request that did not come through the configured proxy has no
     trustworthy entry to read, so it must not be believed."""
     codes = [
         requests.get(
-            f"{deep_proxied}/api/context",
+            f"{short_chain}/api/context",
             headers={"X-Forwarded-For": f"203.0.113.{n}"},
             timeout=10,
         ).status_code
         for n in range(8)
     ]
     assert 429 in codes, f"a one-hop chain was read as a client address: {codes}"
-
-
-def test_the_hop_count_is_what_makes_a_prefix_forgeable(deep_proxied):
-    """Configuring one hop too many is the whole defect, not a tuning nit.
-
-    This fixture says two entries are appended where the proxy appends one,
-    so the caller's own text lands exactly on the trusted position. That is
-    the live deployment's original misconfiguration, taken from Google's
-    load-balancer docs, reproduced here so the cost of the wrong number is
-    a failing test rather than an open demo."""
-    codes = [
-        requests.get(
-            f"{deep_proxied}/api/context",
-            headers={"X-Forwarded-For": f"203.0.113.{n}, 198.51.100.7"},
-            timeout=10,
-        ).status_code
-        for n in range(8)
-    ]
-    assert codes.count(200) == len(codes), (
-        "expected the over-counted hop to read the forged prefix, giving every"
-        f" request its own bucket; got {codes}"
-    )
 
 
 def test_the_health_probe_is_never_throttled(throttled):

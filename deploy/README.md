@@ -96,6 +96,7 @@ Why those flags, given what was measured on this container:
   bucket, then send unique forged values:
 
   ```bash
+  URL=https://mendelea-630108657434.europe-southwest1.run.app
   seq 1 60 | xargs -P 10 -I{} curl -s -o /dev/null -w "%{http_code}
 "     -H "X-Forwarded-For: 203.0.113.{}" "$URL/api/context" | sort | uniq -c
   ```
