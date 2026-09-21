@@ -440,77 +440,73 @@ def test_waiting_does_not_bank_a_bigger_burst():
 
 
 @pytest.fixture
-def throttled(full_warehouse, tmp_path, monkeypatch):
-    source, _ = full_warehouse
-    target = tmp_path / "public.duckdb"
-    spans.export_public(source, target)
-    # A tenth of a token per second, not one. At one per second the test only
-    # produced a 429 if eight sequential HTTP round trips finished inside a
-    # second, which is true on this laptop and not on a loaded CI box.
-    monkeypatch.setattr(server_module, "RATE_PER_MINUTE", 6.0)
-    monkeypatch.setattr(server_module, "RATE_BURST", 3)
+def limited_server(full_warehouse, tmp_path, monkeypatch):
+    """Builds a throttled public server; the caller says what proxy to expect.
 
-    server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(target))
-    threading.Thread(target=server.serve_forever, daemon=True).start()
+    One factory rather than three near-identical fixtures, so a change to how
+    the server starts or stops is made once. The only thing the callers below
+    differ by is the proxy configuration under test.
+    """
+    servers = []
+
+    def build(header="", hops=1):
+        source, _ = full_warehouse
+        target = tmp_path / "public.duckdb"
+        spans.export_public(source, target)
+        # A tenth of a token per second, not one. At one per second the test
+        # only produced a 429 if eight sequential HTTP round trips finished
+        # inside a second, which is true on this laptop and not on a loaded
+        # CI box.
+        monkeypatch.setattr(server_module, "RATE_PER_MINUTE", 6.0)
+        monkeypatch.setattr(server_module, "RATE_BURST", 3)
+        monkeypatch.setattr(server_module, "TRUSTED_IP_HEADER", header)
+        monkeypatch.setattr(server_module, "TRUSTED_PROXY_HOPS", hops)
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(target))
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        servers.append(server)
+        return f"http://127.0.0.1:{server.server_address[1]}"
+
     try:
-        yield f"http://127.0.0.1:{server.server_address[1]}"
+        yield build
     finally:
-        server.shutdown()
-        server.server_close()
+        for server in servers:
+            server.shutdown()
+            server.server_close()
 
 
 @pytest.fixture
-def proxied(full_warehouse, tmp_path, monkeypatch):
-    """`throttled`, but behind a proxy that appends one entry, as Cloud Run does.
+def throttled(limited_server):
+    """Directly exposed: the limiter reads the socket, which is the client."""
+    return limited_server()
+
+
+@pytest.fixture
+def proxied(limited_server):
+    """Behind a proxy that appends one entry, as Cloud Run does.
 
     One, not two: measured against the live service rather than taken from
     Google's load-balancer documentation, which describes a different ingress
     and would put the hop count one too high -- which is precisely where a
-    forged prefix lands."""
-    source, _ = full_warehouse
-    target = tmp_path / "public.duckdb"
-    spans.export_public(source, target)
-    monkeypatch.setattr(server_module, "RATE_PER_MINUTE", 6.0)
-    monkeypatch.setattr(server_module, "RATE_BURST", 3)
-    monkeypatch.setattr(server_module, "TRUSTED_IP_HEADER", "X-Forwarded-For")
-    monkeypatch.setattr(server_module, "TRUSTED_PROXY_HOPS", 1)
-
-    server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(target))
-    threading.Thread(target=server.serve_forever, daemon=True).start()
-    try:
-        yield f"http://127.0.0.1:{server.server_address[1]}"
-    finally:
-        server.shutdown()
-        server.server_close()
+    forged prefix lands.
+    """
+    return limited_server("X-Forwarded-For", 1)
 
 
 @pytest.fixture
-def short_chain(full_warehouse, tmp_path, monkeypatch):
+def short_chain(limited_server):
     """Configured for two appended entries against a proxy that appends one.
 
     Only to prove the fallback: a chain shorter than the hop count is not the
     chain this deployment was configured for, so no entry in it is trusted.
-    There is deliberately no test here asserting what a too-high hop count
-    *does* read. Review pointed out that such a test passes exactly when the
-    deployment is exploitable, and would fail on a future change that made
-    an over-long chain fall back instead -- cementing the vulnerable
-    behaviour rather than guarding against it. What the wrong number costs
-    is recorded in `server.py` and `deploy/README.md`, measured."""
-    source, _ = full_warehouse
-    target = tmp_path / "public.duckdb"
-    spans.export_public(source, target)
-    monkeypatch.setattr(server_module, "RATE_PER_MINUTE", 6.0)
-    monkeypatch.setattr(server_module, "RATE_BURST", 3)
-    monkeypatch.setattr(server_module, "TRUSTED_IP_HEADER", "X-Forwarded-For")
-    monkeypatch.setattr(server_module, "TRUSTED_PROXY_HOPS", 2)
-
-    server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(target))
-    threading.Thread(target=server.serve_forever, daemon=True).start()
-    try:
-        yield f"http://127.0.0.1:{server.server_address[1]}"
-    finally:
-        server.shutdown()
-        server.server_close()
+    There is deliberately no test asserting what a too-high hop count *does*
+    read. Review pointed out that such a test passes exactly when the
+    deployment is exploitable, and would fail on a future change that made an
+    over-long chain fall back instead -- cementing the vulnerable behaviour
+    rather than guarding against it. What the wrong number costs is recorded
+    in `server.py` and `deploy/README.md`, measured.
+    """
+    return limited_server("X-Forwarded-For", 2)
 
 
 def test_a_flood_is_refused_with_429_and_retry_after(throttled):

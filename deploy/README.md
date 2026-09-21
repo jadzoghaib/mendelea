@@ -31,8 +31,13 @@ Measured on that service rather than estimated, from its own request logs:
 | unknown path, missing token | 3 ms, refused before taking a query slot |
 | cold start, boot through `warm()` to the port opening | 5.2–5.8 s |
 
-Under 60 requests arriving at once: one instance, median 606 ms, slowest 948 ms, nothing
-refused by the queue. A second instance never started.
+Under 60 requests arriving at once from a single client: one instance, median 606 ms,
+slowest 948 ms server-side, and a second instance never started. Three of the sixty came
+back 429 — that is the rate limiter doing its job on one client against a burst of 40,
+not the query queue, which refused nothing. Sixty *visitors* would carry sixty buckets.
+
+For throughput without the limiter in the way, the same artefact served locally took
+waves of 20, 60 and 120 concurrent heavy queries with 200 of 200 answered.
 
 **The link does not expire and does not get switched off for going over.** Past the free
 tier Google bills rather than cuts off, and the ceiling of three instances is what bounds
@@ -70,8 +75,15 @@ Why those flags, given what was measured on this container:
 - **`--cpu 2`** because CPU is the lever and memory is not. Two vCPUs ran the same load
   at 6.5 s where one ran it at 10 s; past two it stops improving. Cloud Run bills CPU by
   the second while a request is in flight, so two idle vCPUs cost nothing.
-- **`--memory 512Mi`** because peak observed was 198 MB under 150 concurrent visitors.
-  More would be billed against the free GiB-seconds for no gain.
+- **`--memory 512Mi`** because peak observed is 255 MB, half the cap. That is with
+  the threads and concurrency this command sets: 198 MB was measured at the lower
+  defaults of 2 and 4, so raising them to 4 and 6 costs about 56 MB. Re-measure when
+  changing either — this container has been OOM-killed once, and the DuckDB cap bounds
+  DuckDB, not the Python holding the response.
+
+  Measured by serving the real artefact on 127.0.0.1 and sampling the resident set
+  through waves of 20, 60 and 120 concurrent heavy queries: 200 of 200 served, nothing
+  refused by the queue.
 - **`--concurrency 40`** so one instance handles a meeting-sized crowd before a second
   starts. Cold starts pay the 2.7 s context build, which is why the server warms itself
   before opening the port.

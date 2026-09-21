@@ -97,15 +97,17 @@ documents its external HTTP(S) load balancer as appending
 `<client-ip>,<load-balancer-ip>`; Cloud Run's own run.app ingress appends
 one entry. Taking the documented two put the caller's forged prefix exactly
 on the trusted position, and both PR reviewers then pushed for three. The
-measurement that settles it needs both halves, because each catches the
-opposite error:
+measurement that settles it needs both halves, because a single column
+cannot tell a forgeable configuration from one where everyone shares a
+bucket. Measured on this service:
 
 |  | forged prefixes, bucket drained | a second network, bucket drained |
 |---|---|---|
-| hop count too high | all served -- forgeable | — |
-| hop count too low | — | refused -- everyone shares one bucket |
+| `HOPS=2` | 60 of 60 served — forgeable | refused — shared bucket |
+| `HOPS=1` | 6 of 40 served — forgery ignored | served — visitors separate |
 
-Measured on this service: `HOPS=2` gave 60 of 60 forged served and refused
-the second network; `HOPS=1` gave 6 of 40 and served it. One appended hop.
+Two, one too many, fails both ways at once: the forged prefix lands on the
+trusted position, and a request without one leaves a chain too short to
+read, so it falls back to the socket and everyone shares. One appended hop.
 
 No TLS, no rate limiting: bind to 127.0.0.1 only.
