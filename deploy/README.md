@@ -39,6 +39,30 @@ not the query queue, which refused nothing. Sixty *visitors* would carry sixty b
 For throughput without the limiter in the way, the same artefact served locally took
 waves of 20, 60 and 120 concurrent heavy queries with 200 of 200 answered.
 
+### What it would take to run out
+
+Cloud Run's always-free tier is 2 million requests, 180,000 vCPU-seconds and 360,000
+GiB-seconds a month, and billing is request-based by default: instances are charged only
+while they handle a request, start, or shut down. Idle costs nothing, which is what makes
+scale-to-zero worth having.
+
+Against the latencies above, one person opening the link and looking at a few genes is
+about eleven requests and a second of request time. So:
+
+| | runs out after |
+|---|---|
+| vCPU-seconds | **~89,000 visits/month** |
+| requests | ~182,000 visits/month |
+| GiB-seconds | ~715,000 visits/month |
+
+CPU binds first, at a number no demo reaches. Cold starts are not the problem either: at
+11.6 vCPU-seconds each, twenty a day is 4% of the allowance.
+
+Outbound data is the one line with no free allowance here — Google's free gigabyte is
+North America only, and this runs in Madrid, so egress bills from the first byte. At
+roughly 0.9 MB a visit that is small, but the per-GB rate is not recorded here because it
+was not verified.
+
 **The link does not expire and does not get switched off for going over.** Past the free
 tier Google bills rather than cuts off, and the ceiling of three instances is what bounds
 the bill. The one thing that does stop it is the billing account: a Google Cloud *free
