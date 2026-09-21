@@ -13,6 +13,38 @@ mendelea export-public --out mendelea-public.duckdb
 
 ---
 
+## What is running now
+
+**https://mendelea-630108657434.europe-southwest1.run.app**
+
+Google Cloud Run, project `mendelea-demo-202609`, region `europe-southwest1`. Two vCPU,
+512 MiB, concurrency 40, scale to zero, ceiling of three instances, 300 s request timeout.
+
+Measured on that service rather than estimated, from its own request logs:
+
+| | server-side |
+|---|---|
+| the page, 47 KB of HTML | 3–14 ms |
+| `/api/context` | 3 ms, built once at boot |
+| `/api/composition` | ~90 ms |
+| `/api/variants`, 300 rows | 105–133 ms |
+| unknown path, missing token | 3 ms, refused before taking a query slot |
+| cold start, boot through `warm()` to the port opening | 5.2–5.8 s |
+
+Under 60 requests arriving at once: one instance, median 606 ms, slowest 948 ms, nothing
+refused by the queue. A second instance never started.
+
+**The link does not expire and does not get switched off for going over.** Past the free
+tier Google bills rather than cuts off, and the ceiling of three instances is what bounds
+the bill. The one thing that does stop it is the billing account: a Google Cloud *free
+trial* stops every resource it created when its 90 days end, with a 30-day window to
+upgrade and recover. Check which kind of account this is at
+[console.cloud.google.com/billing](https://console.cloud.google.com/billing) — a trial
+shows the remaining credit and the days left. Upgrading to a paid account does not start
+charging; it only removes the expiry, and the free tier keeps applying.
+
+---
+
 ## Google Cloud Run — the recommendation
 
 Container-native, scales to zero, and the always-free tier is denominated in
@@ -30,7 +62,7 @@ gcloud run deploy mendelea \
   --min-instances 0 --max-instances 3 \
   --concurrency 40 \
   --allow-unauthenticated \
-  --set-env-vars MENDELEA_TRUSTED_IP_HEADER=X-Forwarded-For,MENDELEA_DB_THREADS=4,MENDELEA_DB_MAX_CONCURRENT=6,MENDELEA_POLICY_THRESHOLD=0.03
+  --set-env-vars MENDELEA_TRUSTED_IP_HEADER=X-Forwarded-For,MENDELEA_TRUSTED_PROXY_HOPS=2,MENDELEA_DB_THREADS=4,MENDELEA_DB_MAX_CONCURRENT=6,MENDELEA_POLICY_THRESHOLD=0.03
 ```
 
 Why those flags, given what was measured on this container:
@@ -45,8 +77,18 @@ Why those flags, given what was measured on this container:
   before opening the port.
 - **`--max-instances 3`** is a spend ceiling, not a capacity target. Without it a
   traffic spike can bill past the free tier while you are asleep.
-- **`X-Forwarded-For`** because Cloud Run terminates TLS and proxies. Unset, the rate
-  limiter sees one address for the whole internet and throttles everybody as one client.
+- **`X-Forwarded-For` with `HOPS=2`** because Cloud Run terminates TLS and proxies.
+  Unset, the rate limiter sees one address for the whole internet and throttles everybody
+  as one client — two people on the same call take each other down. But the header is
+  read from the *right*, and the hop count is not optional: Google's load balancer
+  appends `<client-ip>,<load-balancer-ip>` to whatever the caller already sent, and
+  documents that it "does not verify any IP addresses that precede" those two. So the
+  leftmost entry is written by the caller. Reading it hands anyone a fresh bucket per
+  request, which is worse than no limiter because it looks like one. Two is the number
+  of entries Google writes; the client is the first of them.
+
+  Verified against the live service: 120 requests each carrying a different forged
+  prefix must still share one bucket.
 
 Cloud Run listens on `$PORT`, which it sets to 8080. The Dockerfile honours it.
 
@@ -117,6 +159,7 @@ Two things to set wherever you land:
 | | |
 |---|---|
 | `MENDELEA_TRUSTED_IP_HEADER` | the header *that* proxy sets, or the rate limiter throttles everyone as one client |
+| `MENDELEA_TRUSTED_PROXY_HOPS` | how many entries that proxy appends: **`2`** behind Google Cloud, `1` for a single-value header like `Fly-Client-IP`. The chain is read from the right, because everything left of the proxy's own entry came from the caller |
 | `MENDELEA_DB_THREADS` / `MENDELEA_DB_MAX_CONCURRENT` | raise together with the CPU count; they are one budget |
 | `MENDELEA_POLICY_THRESHOLD` | **`0.03` for the 31-gene panel.** At the 5% default this panel reports no policy event at all, because the threshold is a share of the corpus and this corpus is three times the size of the one the default was chosen against |
 

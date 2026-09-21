@@ -58,7 +58,28 @@ CSP = (
 # header when there is no proxy is worse: anyone can set it and get their own
 # fresh bucket per request. So it is opt-in, and names the header the
 # deployment actually trusts (Fly-Client-IP on Fly, X-Forwarded-For elsewhere).
+#
+# And it is read from the RIGHT. Google's load balancer documents that it
+# appends `<client-ip>,<load-balancer-ip>` to whatever the caller already
+# sent, and that it "does not verify any IP addresses that precede" those
+# two. So on Cloud Run the leftmost entry is written by the caller: reading
+# it lets anyone mint a fresh bucket per request and walk past the limiter,
+# which is worse than having no limiter at all because it looks like one.
+#
+# HOPS is how far from the right the proxy's own entry sits:
+#
+#   Cloud Run, Google Cloud LB   X-Forwarded-For   2   client, then the LB
+#   Fly.io                       Fly-Client-IP     1   one value, no chain
+#
+# A chain shorter than HOPS means the request did not arrive through the
+# proxy this deployment was configured for, so the socket is used instead.
 TRUSTED_IP_HEADER = os.environ.get("MENDELEA_TRUSTED_IP_HEADER", "")
+TRUSTED_PROXY_HOPS = int(os.environ.get("MENDELEA_TRUSTED_PROXY_HOPS", "1"))
+if TRUSTED_PROXY_HOPS < 1:
+    raise ValueError(
+        "MENDELEA_TRUSTED_PROXY_HOPS counts entries from the right and must be"
+        f" at least 1; got {TRUSTED_PROXY_HOPS}"
+    )
 RATE_PER_MINUTE = float(os.environ.get("MENDELEA_RATE_PER_MINUTE", "120"))
 RATE_BURST = int(os.environ.get("MENDELEA_RATE_BURST", "40"))
 
@@ -301,10 +322,12 @@ def make_handler(warehouse: Path):
 
         def _client(self) -> str:
             if TRUSTED_IP_HEADER:
-                forwarded = self.headers.get(TRUSTED_IP_HEADER, "")
-                if forwarded:
-                    # X-Forwarded-For is a chain; the client is the first hop.
-                    return forwarded.split(",")[0].strip()
+                raw = self.headers.get(TRUSTED_IP_HEADER, "")
+                chain = [hop.strip() for hop in raw.split(",") if hop.strip()]
+                # Counted from the right: everything to the left of the
+                # proxy's own entry was supplied by the caller.
+                if len(chain) >= TRUSTED_PROXY_HOPS:
+                    return chain[-TRUSTED_PROXY_HOPS]
             return self.client_address[0]
 
         def _send(self, status: int, body: bytes, content_type: str,

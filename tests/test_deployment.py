@@ -429,6 +429,26 @@ def throttled(full_warehouse, tmp_path, monkeypatch):
         server.server_close()
 
 
+@pytest.fixture
+def proxied(full_warehouse, tmp_path, monkeypatch):
+    """`throttled`, but behind a proxy that appends two hops, as Cloud Run does."""
+    source, _ = full_warehouse
+    target = tmp_path / "public.duckdb"
+    spans.export_public(source, target)
+    monkeypatch.setattr(server_module, "RATE_PER_MINUTE", 6.0)
+    monkeypatch.setattr(server_module, "RATE_BURST", 3)
+    monkeypatch.setattr(server_module, "TRUSTED_IP_HEADER", "X-Forwarded-For")
+    monkeypatch.setattr(server_module, "TRUSTED_PROXY_HOPS", 2)
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(target))
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        yield f"http://127.0.0.1:{server.server_address[1]}"
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
 def test_a_flood_is_refused_with_429_and_retry_after(throttled):
     codes = [requests.get(f"{throttled}/api/context", timeout=10).status_code
              for _ in range(8)]
@@ -685,6 +705,60 @@ def test_the_context_is_warmed_before_the_port_opens(tmp_path, full_warehouse):
     finally:
         server.shutdown()
         server.server_close()
+
+
+def test_a_spoofed_forwarded_prefix_does_not_mint_a_fresh_bucket(proxied):
+    """The defect this guards is a limiter that looks like one and is not.
+
+    Google's load balancer appends `<client-ip>,<load-balancer-ip>` to
+    whatever the caller sent and does not verify anything before it. Reading
+    the leftmost entry therefore reads the caller's own text, so rotating it
+    gives an unlimited supply of buckets. Every request below carries a
+    different forged prefix and they must still share one bucket."""
+    codes = [
+        requests.get(
+            f"{proxied}/api/context",
+            headers={"X-Forwarded-For": f"203.0.113.{n}, 198.51.100.7, 10.0.0.1"},
+            timeout=10,
+        ).status_code
+        for n in range(8)
+    ]
+    assert codes[0] == 200
+    assert 429 in codes, f"forged prefixes were handed their own buckets: {codes}"
+
+
+def test_two_real_clients_do_not_share_a_bucket(proxied):
+    """The other half: the entry the proxy itself wrote does separate
+    visitors, which is the whole reason for reading the header at all."""
+    spent = [
+        requests.get(
+            f"{proxied}/api/context",
+            headers={"X-Forwarded-For": "198.51.100.7, 10.0.0.1"},
+            timeout=10,
+        ).status_code
+        for _ in range(8)
+    ]
+    assert 429 in spent, f"the first client was never throttled: {spent}"
+    fresh = requests.get(
+        f"{proxied}/api/context",
+        headers={"X-Forwarded-For": "198.51.100.99, 10.0.0.1"},
+        timeout=10,
+    )
+    assert fresh.status_code == 200, "a second visitor inherited the first one's bucket"
+
+
+def test_a_chain_shorter_than_the_hop_count_falls_back_to_the_socket(proxied):
+    """A request that did not come through the configured proxy has no
+    trustworthy entry to read, so it must not be believed."""
+    codes = [
+        requests.get(
+            f"{proxied}/api/context",
+            headers={"X-Forwarded-For": f"203.0.113.{n}"},
+            timeout=10,
+        ).status_code
+        for n in range(8)
+    ]
+    assert 429 in codes, f"a one-hop chain was read as a client address: {codes}"
 
 
 def test_the_health_probe_is_never_throttled(throttled):
