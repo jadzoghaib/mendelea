@@ -431,7 +431,32 @@ def throttled(full_warehouse, tmp_path, monkeypatch):
 
 @pytest.fixture
 def proxied(full_warehouse, tmp_path, monkeypatch):
-    """`throttled`, but behind a proxy that appends two hops, as Cloud Run does."""
+    """`throttled`, but behind a proxy that appends one entry, as Cloud Run does.
+
+    One, not two: measured against the live service rather than taken from
+    Google's load-balancer documentation, which describes a different ingress
+    and would put the hop count one too high -- which is precisely where a
+    forged prefix lands."""
+    source, _ = full_warehouse
+    target = tmp_path / "public.duckdb"
+    spans.export_public(source, target)
+    monkeypatch.setattr(server_module, "RATE_PER_MINUTE", 6.0)
+    monkeypatch.setattr(server_module, "RATE_BURST", 3)
+    monkeypatch.setattr(server_module, "TRUSTED_IP_HEADER", "X-Forwarded-For")
+    monkeypatch.setattr(server_module, "TRUSTED_PROXY_HOPS", 1)
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(target))
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        yield f"http://127.0.0.1:{server.server_address[1]}"
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+@pytest.fixture
+def deep_proxied(full_warehouse, tmp_path, monkeypatch):
+    """Configured for two appended entries where the proxy appends one."""
     source, _ = full_warehouse
     target = tmp_path / "public.duckdb"
     spans.export_public(source, target)
@@ -718,7 +743,7 @@ def test_a_spoofed_forwarded_prefix_does_not_mint_a_fresh_bucket(proxied):
     codes = [
         requests.get(
             f"{proxied}/api/context",
-            headers={"X-Forwarded-For": f"203.0.113.{n}, 198.51.100.7, 10.0.0.1"},
+            headers={"X-Forwarded-For": f"203.0.113.{n}, 198.51.100.7"},
             timeout=10,
         ).status_code
         for n in range(8)
@@ -733,7 +758,7 @@ def test_two_real_clients_do_not_share_a_bucket(proxied):
     spent = [
         requests.get(
             f"{proxied}/api/context",
-            headers={"X-Forwarded-For": "198.51.100.7, 10.0.0.1"},
+            headers={"X-Forwarded-For": "198.51.100.7"},
             timeout=10,
         ).status_code
         for _ in range(8)
@@ -741,24 +766,46 @@ def test_two_real_clients_do_not_share_a_bucket(proxied):
     assert 429 in spent, f"the first client was never throttled: {spent}"
     fresh = requests.get(
         f"{proxied}/api/context",
-        headers={"X-Forwarded-For": "198.51.100.99, 10.0.0.1"},
+        headers={"X-Forwarded-For": "198.51.100.99"},
         timeout=10,
     )
     assert fresh.status_code == 200, "a second visitor inherited the first one's bucket"
 
 
-def test_a_chain_shorter_than_the_hop_count_falls_back_to_the_socket(proxied):
+def test_a_chain_shorter_than_the_hop_count_falls_back_to_the_socket(deep_proxied):
     """A request that did not come through the configured proxy has no
     trustworthy entry to read, so it must not be believed."""
     codes = [
         requests.get(
-            f"{proxied}/api/context",
+            f"{deep_proxied}/api/context",
             headers={"X-Forwarded-For": f"203.0.113.{n}"},
             timeout=10,
         ).status_code
         for n in range(8)
     ]
     assert 429 in codes, f"a one-hop chain was read as a client address: {codes}"
+
+
+def test_the_hop_count_is_what_makes_a_prefix_forgeable(deep_proxied):
+    """Configuring one hop too many is the whole defect, not a tuning nit.
+
+    This fixture says two entries are appended where the proxy appends one,
+    so the caller's own text lands exactly on the trusted position. That is
+    the live deployment's original misconfiguration, taken from Google's
+    load-balancer docs, reproduced here so the cost of the wrong number is
+    a failing test rather than an open demo."""
+    codes = [
+        requests.get(
+            f"{deep_proxied}/api/context",
+            headers={"X-Forwarded-For": f"203.0.113.{n}, 198.51.100.7"},
+            timeout=10,
+        ).status_code
+        for n in range(8)
+    ]
+    assert codes.count(200) == len(codes), (
+        "expected the over-counted hop to read the forged prefix, giving every"
+        f" request its own bucket; got {codes}"
+    )
 
 
 def test_the_health_probe_is_never_throttled(throttled):

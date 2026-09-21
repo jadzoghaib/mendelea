@@ -62,7 +62,7 @@ gcloud run deploy mendelea \
   --min-instances 0 --max-instances 3 \
   --concurrency 40 \
   --allow-unauthenticated \
-  --set-env-vars MENDELEA_TRUSTED_IP_HEADER=X-Forwarded-For,MENDELEA_TRUSTED_PROXY_HOPS=2,MENDELEA_DB_THREADS=4,MENDELEA_DB_MAX_CONCURRENT=6,MENDELEA_POLICY_THRESHOLD=0.03
+  --set-env-vars MENDELEA_TRUSTED_IP_HEADER=X-Forwarded-For,MENDELEA_TRUSTED_PROXY_HOPS=1,MENDELEA_DB_THREADS=4,MENDELEA_DB_MAX_CONCURRENT=6,MENDELEA_POLICY_THRESHOLD=0.03
 ```
 
 Why those flags, given what was measured on this container:
@@ -77,18 +77,32 @@ Why those flags, given what was measured on this container:
   before opening the port.
 - **`--max-instances 3`** is a spend ceiling, not a capacity target. Without it a
   traffic spike can bill past the free tier while you are asleep.
-- **`X-Forwarded-For` with `HOPS=2`** because Cloud Run terminates TLS and proxies.
+- **`X-Forwarded-For` with `HOPS=1`** because Cloud Run terminates TLS and proxies.
   Unset, the rate limiter sees one address for the whole internet and throttles everybody
-  as one client — two people on the same call take each other down. But the header is
-  read from the *right*, and the hop count is not optional: Google's load balancer
-  appends `<client-ip>,<load-balancer-ip>` to whatever the caller already sent, and
-  documents that it "does not verify any IP addresses that precede" those two. So the
-  leftmost entry is written by the caller. Reading it hands anyone a fresh bucket per
-  request, which is worse than no limiter because it looks like one. Two is the number
-  of entries Google writes; the client is the first of them.
+  as one client — two people on the same call take each other down.
 
-  Verified against the live service: 120 requests each carrying a different forged
-  prefix must still share one bucket.
+  The header is read from the *right*, and the hop count is the whole safety property.
+  A proxy appends; it does not replace, so whatever the caller sent survives as a
+  prefix. One hop means the last entry, which is the one Cloud Run itself wrote.
+
+  **`1`, measured — not the `2` the load-balancer documentation implies.** Google
+  documents its *external HTTP(S) load balancer* as appending
+  `<client-ip>,<load-balancer-ip>`, and says it "does not verify any IP addresses that
+  precede" those two. Cloud Run's own `run.app` ingress is a different path and appends
+  one entry. Deploying the documented `2` made this service bypassable: the forged
+  prefix lands exactly on the trusted position.
+
+  How that was measured, and how to re-measure it on any platform — drain the real
+  bucket, then send unique forged values:
+
+  ```bash
+  seq 1 60 | xargs -P 10 -I{} curl -s -o /dev/null -w "%{http_code}
+"     -H "X-Forwarded-For: 203.0.113.{}" "$URL/api/context" | sort | uniq -c
+  ```
+
+  All `200` while the real bucket is empty means the forged value is reaching the
+  trusted position and the hop count is too high. Mixed `429` means it is not.
+  On `HOPS=2` this returned 60 × `200`; on `HOPS=1` it returns 429s.
 
 Cloud Run listens on `$PORT`, which it sets to 8080. The Dockerfile honours it.
 
@@ -159,7 +173,7 @@ Two things to set wherever you land:
 | | |
 |---|---|
 | `MENDELEA_TRUSTED_IP_HEADER` | the header *that* proxy sets, or the rate limiter throttles everyone as one client |
-| `MENDELEA_TRUSTED_PROXY_HOPS` | how many entries that proxy appends: **`2`** behind Google Cloud, `1` for a single-value header like `Fly-Client-IP`. The chain is read from the right, because everything left of the proxy's own entry came from the caller |
+| `MENDELEA_TRUSTED_PROXY_HOPS` | how many entries that proxy appends — **`1` on Cloud Run and Fly, measured.** The chain is read from the right, because everything left of the proxy's own entry came from the caller. One too high is not a tuning error: it puts the caller's own text on the trusted position |
 | `MENDELEA_DB_THREADS` / `MENDELEA_DB_MAX_CONCURRENT` | raise together with the CPU count; they are one budget |
 | `MENDELEA_POLICY_THRESHOLD` | **`0.03` for the 31-gene panel.** At the 5% default this panel reports no policy event at all, because the threshold is a share of the corpus and this corpus is three times the size of the one the default was chosen against |
 

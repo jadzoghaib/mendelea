@@ -511,7 +511,7 @@ These are real and should be read before quoting any number this produces.
 pytest -q
 ```
 
-288 tests, offline by default. The ones worth reading first are `test_spans.py`
+289 tests, offline by default. The ones worth reading first are `test_spans.py`
 (the bitemporal invariants — every headline number is a query over that table)
 and the drift guard at the top of `test_clinvar.py`.
 

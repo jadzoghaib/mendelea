@@ -59,20 +59,31 @@ CSP = (
 # fresh bucket per request. So it is opt-in, and names the header the
 # deployment actually trusts (Fly-Client-IP on Fly, X-Forwarded-For elsewhere).
 #
-# And it is read from the RIGHT. Google's load balancer documents that it
-# appends `<client-ip>,<load-balancer-ip>` to whatever the caller already
-# sent, and that it "does not verify any IP addresses that precede" those
-# two. So on Cloud Run the leftmost entry is written by the caller: reading
-# it lets anyone mint a fresh bucket per request and walk past the limiter,
-# which is worse than having no limiter at all because it looks like one.
+# And it is read from the RIGHT. A proxy appends; it does not replace. So
+# whatever the caller sent survives as a prefix, and the leftmost entry is
+# caller-written text. Reading it lets anyone mint a fresh bucket per request
+# and walk past the limiter -- worse than having no limiter, because it looks
+# like one. The rightmost entries are the ones a proxy actually wrote.
 #
-# HOPS is how far from the right the proxy's own entry sits:
+# HOPS is how far from the right the nearest trusted proxy's entry sits:
 #
-#   Cloud Run, Google Cloud LB   X-Forwarded-For   2   client, then the LB
-#   Fly.io                       Fly-Client-IP     1   one value, no chain
+#   Cloud Run (*.run.app)   X-Forwarded-For   1   one entry, measured
+#   Fly.io                  Fly-Client-IP     1   one value, no chain
+#
+# **Measure this, never infer it.** Google documents its *external HTTP(S)
+# load balancer* as appending `<client-ip>,<load-balancer-ip>` -- two entries.
+# Cloud Run's own run.app ingress is a different path and appends one. Taking
+# the documented two made the live service bypassable: with HOPS=2 the forged
+# prefix lands exactly on the trusted position. Sixty requests carrying sixty
+# different forged values were all served while the real bucket was empty.
+#
+# To measure it on a new platform, send unique forged values while the real
+# bucket is drained. All served means the forged value is reaching the
+# trusted position and HOPS is too high.
 #
 # A chain shorter than HOPS means the request did not arrive through the
 # proxy this deployment was configured for, so the socket is used instead.
+# One is the safe value: the last entry is always the nearest proxy's own.
 TRUSTED_IP_HEADER = os.environ.get("MENDELEA_TRUSTED_IP_HEADER", "")
 TRUSTED_PROXY_HOPS = int(os.environ.get("MENDELEA_TRUSTED_PROXY_HOPS", "1"))
 if TRUSTED_PROXY_HOPS < 1:
