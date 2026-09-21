@@ -220,6 +220,11 @@ def test_responses_carry_the_security_headers(public_server):
 # --------------------------------------------------------------------------
 
 
+def _commands(d):
+    """Every command letter in a path, whether or not _visits handles it."""
+    return re.findall(r"[A-Za-z]", d)
+
+
 def _icon_paths(page):
     """The `d` attribute of every path in the page's inline icon.
 
@@ -241,6 +246,17 @@ def _icon_paths(page):
     # that path happens to sit inside the strand bounds, which is the same
     # silent false confidence the width test exists to prevent.
     assert len(paths) == 3, f"expected two strands and one rung path, got {len(paths)}"
+    for d in paths:
+        unhandled = sorted(set(_commands(d)) - set("MQh"))
+        # Without this, an unhandled letter falls through the tokenizer and its
+        # digits land in the command position, so swapping `h18` for `v18`
+        # fails with "unhandled path command '18'" -- naming the number rather
+        # than the command. An icon edit doing exactly that is what these
+        # tests are for, so the failure has to say so.
+        assert not unhandled, (
+            f"icon path uses {unhandled}, which _visits cannot measure;"
+            f" extend it or keep the icon to M, Q and h: {d}"
+        )
     return paths
 
 
@@ -352,7 +368,7 @@ def test_the_two_strands_are_mirrored(public_server):
     # Equal point counts are not enough to make position i comparable: two
     # different command layouts can sample to the same total and shift the
     # grid, so the zip below would compare unrelated points on the curves.
-    layouts = [re.findall(r"[MQhv]", d) for d in drawn]
+    layouts = [_commands(d) for d in drawn]
     assert layouts[0] == layouts[1], f"strands are drawn differently: {layouts}"
     strand_a, strand_b = (list(_visits(d)) for d in drawn)
     assert len(strand_a) == len(strand_b)
@@ -450,6 +466,14 @@ def limited_server(full_warehouse, tmp_path, monkeypatch):
     servers = []
 
     def build(header="", hops=1):
+        if servers:
+            raise AssertionError(
+                "limited_server builds one server per test. A second call would"
+                " re-point the module-level proxy settings that the first server"
+                " reads on every request, and re-export over the file it holds"
+                " open -- so the first server would silently change behaviour"
+                " with nothing failing to say so."
+            )
         source, _ = full_warehouse
         target = tmp_path / "public.duckdb"
         spans.export_public(source, target)

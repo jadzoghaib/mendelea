@@ -86,11 +86,17 @@ output properly rather than merging past it — but check each claim against the
 data before acting, since the one they pushed hardest (a star-only span break
 defeating the policy key) measures to exactly zero on both panels.
 
-The deployed service added a fourth class: defects that only exist in the
-deployment. The live revision carried no environment at all, so the rate
-limiter read the socket -- which behind Cloud Run is the Google frontend --
-and throttled every visitor on the internet as one client. Nothing in the
-repository was wrong. Reading the code could not have found it.
+The deployed service added a fourth class: defects that live in the
+deployment rather than the tree. The live revision carried no environment at
+all, so the rate limiter read the socket -- which behind Cloud Run is the
+Google frontend -- and throttled every visitor on the internet as one client.
+
+The consequence was already written down in two places: `server.py` says
+reading the socket behind a proxy "would throttle the world as a single
+client", and `deploy/README.md` lists the variable that prevents it. What no
+amount of reading could show is that the running revision had it unset. The
+repository described the trap correctly and the deployment walked into it, so
+the check that matters is against the service, not the source.
 
 **The proxy hop count must be measured, never read off a docs page.** Google
 documents its external HTTP(S) load balancer as appending
