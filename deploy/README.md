@@ -85,8 +85,9 @@ Why those flags, given what was measured on this container:
   through waves of 20, 60 and 120 concurrent heavy queries: 200 of 200 served, nothing
   refused by the queue.
 - **`--concurrency 40`** so one instance handles a meeting-sized crowd before a second
-  starts. Cold starts pay the 2.7 s context build, which is why the server warms itself
-  before opening the port.
+  starts, because a cold start costs the first visitor 5.2–5.8 s. Most of that is the
+  context build, which the server does before opening the port rather than inside the
+  first request — otherwise one visitor waits while the platform thinks it is ready.
 - **`--max-instances 3`** is a spend ceiling, not a capacity target. Without it a
   traffic spike can bill past the free tier while you are asleep.
 - **`X-Forwarded-For` with `HOPS=1`** because Cloud Run terminates TLS and proxies.
@@ -109,8 +110,7 @@ Why those flags, given what was measured on this container:
 
   ```bash
   URL=https://mendelea-630108657434.europe-southwest1.run.app
-  seq 1 60 | xargs -P 10 -I{} curl -s -o /dev/null -w "%{http_code}
-"     -H "X-Forwarded-For: 203.0.113.{}" "$URL/api/context" | sort | uniq -c
+  seq 1 60 | xargs -P 10 -I{} curl -s -o /dev/null -w '%{http_code}\n' -H "X-Forwarded-For: 203.0.113.{}" "$URL/api/context" | sort | uniq -c
   ```
 
   All `200` while the real bucket is empty means the forged value is reaching the
