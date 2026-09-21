@@ -267,30 +267,41 @@ def _visits(d, steps=20):
     endpoints, which is how this icon gets its width at all -- so endpoints
     alone would measure the wrong thing.
     """
+    arity = {"M": 2, "h": 1, "Q": 4}
     tokens = re.findall(r"[MQh]|-?\d+(?:\.\d+)?", d)
     x = y = 0.0
     index = 0
     while index < len(tokens):
         command = tokens[index]
+        if command not in arity:
+            raise AssertionError(f"unhandled path command {command!r} in {d!r}")
+        # Argument counts are checked rather than sliced blind: a truncated
+        # path otherwise dies on "not enough values to unpack" or a bare
+        # IndexError, neither of which says which command was short. This
+        # file asserts elsewhere that a failure has to name the offender.
+        args = tokens[index + 1:index + 1 + arity[command]]
+        if len(args) != arity[command] or any(a in arity for a in args):
+            raise AssertionError(
+                f"path command {command!r} wants {arity[command]}"
+                f" number{'s' if arity[command] > 1 else ''}, got {args} in {d!r}"
+            )
+        args = [float(a) for a in args]
+        index += 1 + arity[command]
+
         if command == "M":
-            x, y = float(tokens[index + 1]), float(tokens[index + 2])
+            x, y = args
             yield x, y
-            index += 3
         elif command == "h":
-            x += float(tokens[index + 1])
+            x += args[0]
             yield x, y
-            index += 2
-        elif command == "Q":
-            cx, cy, x1, y1 = (float(t) for t in tokens[index + 1:index + 5])
+        else:
+            cx, cy, x1, y1 = args
             for step in range(steps + 1):
                 t = step / steps
                 u = 1 - t
                 yield (u * u * x + 2 * u * t * cx + t * t * x1,
                        u * u * y + 2 * u * t * cy + t * t * y1)
             x, y = x1, y1
-            index += 5
-        else:
-            raise AssertionError(f"unhandled path command {command!r}")
 
 
 def _extent(points):
