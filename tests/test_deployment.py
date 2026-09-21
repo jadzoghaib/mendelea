@@ -234,7 +234,14 @@ def _icon_paths(page):
     root = ElementTree.fromstring(base64.b64decode(match.group(1)))
     assert root.tag.endswith("svg")
     assert root.get("viewBox") == "0 0 32 32"
-    return [node.get("d") for node in root.iter() if node.tag.endswith("path")]
+    paths = [node.get("d") for node in root.iter() if node.tag.endswith("path")]
+    # Every test below indexes this list by position: [0] and [1] are the two
+    # strands, [2] the rungs. Without this, inserting a path ahead of the
+    # rungs makes the rung test measure the new path instead -- passing if
+    # that path happens to sit inside the strand bounds, which is the same
+    # silent false confidence the width test exists to prevent.
+    assert len(paths) == 3, f"expected two strands and one rung path, got {len(paths)}"
+    return paths
 
 
 def _visits(d):
