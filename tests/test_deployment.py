@@ -6,9 +6,12 @@ not contain any, that a caller cannot spend the container's CPU without limit,
 and that a platform probe is cheap enough to run every few seconds.
 """
 
+import base64
+import re
 import threading
 import time
 from http.server import ThreadingHTTPServer
+from xml.etree import ElementTree
 
 import duckdb
 import pytest
@@ -210,6 +213,115 @@ def test_responses_carry_the_security_headers(public_server):
     assert headers["Referrer-Policy"] == "no-referrer"
     assert "frame-ancestors 'none'" in headers["Content-Security-Policy"]
     assert "default-src 'self'" in headers["Content-Security-Policy"]
+
+
+# --------------------------------------------------------------------------
+# The tab icon
+# --------------------------------------------------------------------------
+
+
+def _icon_paths(page):
+    """The `d` attribute of every path in the page's inline icon.
+
+    Decoding proves the base64 survived editing, and parsing proves the
+    result is still XML: a truncated payload gives a browser a broken icon
+    and gives a reader of the HTML no clue at all.
+    """
+    match = re.search(
+        r'<link rel="icon" href="data:image/svg\+xml;base64,([A-Za-z0-9+/=]+)"', page
+    )
+    assert match, "the served page carries no inline icon"
+    root = ElementTree.fromstring(base64.b64decode(match.group(1)))
+    assert root.tag.endswith("svg")
+    assert root.get("viewBox") == "0 0 32 32"
+    return [node.get("d") for node in root.iter() if node.tag.endswith("path")]
+
+
+def _visits(d):
+    """Every point a path visits, sampling quadratics rather than solving them.
+
+    A control point outside the viewBox pulls the curve far past its own
+    endpoints, which is how this icon gets its width at all -- so endpoints
+    alone would measure the wrong thing.
+    """
+    tokens = re.findall(r"[MQh]|-?\d+(?:\.\d+)?", d)
+    x = y = 0.0
+    index = 0
+    while index < len(tokens):
+        command = tokens[index]
+        if command == "M":
+            x, y = float(tokens[index + 1]), float(tokens[index + 2])
+            yield x, y
+            index += 3
+        elif command == "h":
+            x += float(tokens[index + 1])
+            yield x, y
+            index += 2
+        elif command == "Q":
+            cx, cy, x1, y1 = (float(t) for t in tokens[index + 1:index + 5])
+            for step in range(21):
+                t = step / 20
+                u = 1 - t
+                yield (u * u * x + 2 * u * t * cx + t * t * x1,
+                       u * u * y + 2 * u * t * cy + t * t * y1)
+            x, y = x1, y1
+            index += 5
+        else:
+            raise AssertionError(f"unhandled path command {command!r}")
+
+
+def _extent(points):
+    """(left, right, top, bottom) of a path. Materialised first: _visits is a
+    generator, and reading it twice leaves the second axis empty."""
+    points = list(points)
+    xs = [x for x, _ in points]
+    ys = [y for _, y in points]
+    return min(xs), max(xs), min(ys), max(ys)
+
+
+def test_each_strand_fills_its_box(public_server):
+    """A helix drawn between its own endpoints is 7 units wide in a 32-unit
+    box, which at 16px is a vertical smudge; the width comes from control
+    points placed outside the box. The first attempt shipped the smudge.
+
+    Measured per strand, not over the whole icon: the rungs are a fixed
+    18-unit horizontal line, so a bound on the union of all three paths is
+    satisfied by the rungs alone and says nothing about the strands. That
+    version of this test passed on the broken icon."""
+    url, _ = public_server
+    page = requests.get(f"{url}/", timeout=10).text
+    for index, d in enumerate(_icon_paths(page)[:2]):
+        left, right, top, bottom = _extent(_visits(d))
+        assert right - left >= 0.4 * 32, (
+            f"strand {index} is {right - left:.1f} units wide in a 32-unit box"
+        )
+        assert bottom - top >= 0.7 * 32, (
+            f"strand {index} is {bottom - top:.1f} units tall in a 32-unit box"
+        )
+
+
+def test_the_rungs_land_on_the_strands(public_server):
+    """The rungs read as connecting the two strands only if they end where the
+    strands are. A rung wider than the helix it crosses is a loose bar."""
+    url, _ = public_server
+    page = requests.get(f"{url}/", timeout=10).text
+    paths = _icon_paths(page)
+    strands = [_extent(_visits(d)) for d in paths[:2]]
+    rung_left, rung_right = _extent(_visits(paths[2]))[:2]
+    assert rung_left >= min(left for left, _, _, _ in strands) - 0.5
+    assert rung_right <= max(right for _, right, _, _ in strands) + 0.5
+
+
+def test_the_two_strands_are_mirrored(public_server):
+    """The pair reads as a helix only if one strand is the other reflected in
+    the centre line. Drifting control points give two unrelated squiggles."""
+    url, _ = public_server
+    page = requests.get(f"{url}/", timeout=10).text
+    strand_a, strand_b = (list(_visits(d)) for d in _icon_paths(page)[:2])
+    assert len(strand_a) == len(strand_b)
+    for (ax, ay), (bx, by) in zip(strand_a, strand_b):
+        assert ay == pytest.approx(by)
+        assert ax - 16 == pytest.approx(16 - bx)
 
 
 # --------------------------------------------------------------------------
