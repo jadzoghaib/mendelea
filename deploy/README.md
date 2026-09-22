@@ -54,7 +54,14 @@ Measured on that service rather than estimated, from its own request logs:
 | `/api/composition` | ~90 ms |
 | `/api/variants`, 300 rows | 105–133 ms |
 | unknown path, missing token | 3 ms, refused before taking a query slot |
-| cold start, boot through `warm()` to the port opening | 5.2–5.8 s |
+| cold start, what the first visitor actually waits | 3.2–4.3 s |
+
+Warm requests land at a 2.4 ms median and 4.1 ms at p90 across 400 requests, with the
+cold starts the whole of the tail: six requests over two seconds, none over 4.3. Those
+are Google's own frontend measurements, which include the wait for an instance to
+start, so they are what a visitor experiences rather than what the container reports
+about itself. The container's own boot-to-port window runs 4.3–5.8 s and is the larger
+number, because the probe that declares it ready only runs on an interval.
 
 Under 60 requests arriving at once from a single client: one instance, median 606 ms,
 slowest 948 ms server-side, and a second instance never started. Three of the sixty came
@@ -134,9 +141,12 @@ Why those flags, given what was measured on this container:
   through waves of 20, 60 and 120 concurrent heavy queries: 200 of 200 served, nothing
   refused by the queue.
 - **`--concurrency 40`** so one instance handles a meeting-sized crowd before a second
-  starts, because a cold start costs the first visitor 5.2–5.8 s. Most of that is the
+  starts, because a cold start costs the first visitor 3–4 s. Most of that is the
   context build, which the server does before opening the port rather than inside the
   first request — otherwise one visitor waits while the platform thinks it is ready.
+
+  Measure this from the service's request logs, not from a laptop. A local DNS stall
+  made the same request read 34 s client-side while Google logged it at 3.5 ms.
 - **`--max-instances 3`** is a spend ceiling, not a capacity target. Without it a
   traffic spike can bill past the free tier while you are asleep.
 - **`X-Forwarded-For` with `HOPS=1`** because Cloud Run terminates TLS and proxies.
